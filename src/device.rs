@@ -89,6 +89,21 @@ impl FileSource {
             sector,
         })
     }
+
+    /// Test-only: open a regular file but force a non-trivial sector
+    /// size so the slow alignment path in `read_at` is exercised on
+    /// hosts where `IOCTL_DISK_GET_DRIVE_GEOMETRY_EX` doesn't apply.
+    #[cfg(test)]
+    pub(crate) fn open_with_sector(path: &Path, sector: u64) -> Result<Self> {
+        let file = open_with_share(path, false)?;
+        let size = compute_size(&file).with_context(|| format!("sizing {path:?}"))?;
+        Ok(Self {
+            file,
+            size,
+            writable: false,
+            sector,
+        })
+    }
 }
 
 impl BlockSource for FileSource {
@@ -330,4 +345,89 @@ fn detect_sector_alignment(file: &File) -> u64 {
         return 512;
     }
     bps as u64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    /// Build a tempfile with a deterministic byte pattern so reads can
+    /// be checked against `expected_byte(offset)`.
+    fn tempfile_with_pattern(len: usize) -> (tempfile::NamedTempFile, Vec<u8>) {
+        let mut f = tempfile::NamedTempFile::new().expect("tempfile");
+        let bytes: Vec<u8> = (0..len).map(|i| (i as u8).wrapping_mul(7).wrapping_add(13)).collect();
+        f.write_all(&bytes).expect("write");
+        f.flush().expect("flush");
+        (f, bytes)
+    }
+
+    /// Regular files get sector == 1 so every read goes through the
+    /// fast path. This proves the basic FileSource round-trips bytes.
+    #[test]
+    fn fast_path_regular_file() {
+        let (tf, bytes) = tempfile_with_pattern(8192);
+        let src = FileSource::open(tf.path()).expect("open");
+        assert_eq!(src.size(), bytes.len() as u64);
+        let mut buf = vec![0u8; 4096];
+        src.read_at(1024, &mut buf).expect("read");
+        assert_eq!(&buf[..], &bytes[1024..1024 + 4096]);
+    }
+
+    /// Read past EOF must error rather than silently returning short
+    /// data. The fast-path loop breaks on `n == 0` -> UnexpectedEof.
+    #[test]
+    fn read_past_eof_errors() {
+        let (tf, bytes) = tempfile_with_pattern(2048);
+        let src = FileSource::open(tf.path()).expect("open");
+        let mut buf = vec![0u8; 1024];
+        let r = src.read_at(bytes.len() as u64, &mut buf);
+        assert!(r.is_err(), "read at EOF should error, got {r:?}");
+    }
+
+    // The slow path (alignment rounding + scratch buffer) lives only
+    // on `#[cfg(windows)]` -- the unix impl always calls
+    // `read_exact_at`, ignoring `sector`. The tests below exercise
+    // that path and so are gated to Windows. macOS / Linux runs of
+    // `cargo test --lib` skip them.
+    #[cfg(windows)]
+    #[test]
+    fn slow_path_offset_aligned_len_aligned() {
+        let (tf, bytes) = tempfile_with_pattern(8192);
+        let src = FileSource::open_with_sector(tf.path(), 4096).expect("open");
+        let mut buf = vec![0u8; 4096];
+        src.read_at(0, &mut buf).expect("read");
+        assert_eq!(&buf[..], &bytes[..4096]);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn slow_path_offset_misaligned_len_aligned() {
+        let (tf, bytes) = tempfile_with_pattern(16384);
+        let src = FileSource::open_with_sector(tf.path(), 4096).expect("open");
+        let mut buf = vec![0u8; 4096];
+        // offset 100 is not aligned to 4096.
+        src.read_at(100, &mut buf).expect("read");
+        assert_eq!(&buf[..], &bytes[100..100 + 4096]);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn slow_path_offset_aligned_len_misaligned() {
+        let (tf, bytes) = tempfile_with_pattern(16384);
+        let src = FileSource::open_with_sector(tf.path(), 4096).expect("open");
+        let mut buf = vec![0u8; 1000]; // not aligned
+        src.read_at(4096, &mut buf).expect("read");
+        assert_eq!(&buf[..], &bytes[4096..4096 + 1000]);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn slow_path_both_misaligned() {
+        let (tf, bytes) = tempfile_with_pattern(16384);
+        let src = FileSource::open_with_sector(tf.path(), 4096).expect("open");
+        let mut buf = vec![0u8; 1234];
+        src.read_at(50, &mut buf).expect("read");
+        assert_eq!(&buf[..], &bytes[50..50 + 1234]);
+    }
 }

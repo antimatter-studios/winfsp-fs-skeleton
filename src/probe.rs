@@ -94,3 +94,82 @@ pub unsafe fn device_interface_name(
     let s = OsString::from_wide(trimmed).into_string().ok()?;
     Some(s)
 }
+
+#[cfg(all(test, target_os = "windows"))]
+mod tests {
+    use super::*;
+    use windows_sys::Win32::UI::WindowsAndMessaging::DEV_BROADCAST_DEVICEINTERFACE_W;
+
+    /// Hand-build a `DEV_BROADCAST_DEVICEINTERFACE_W` byte blob with a
+    /// known device path tail and assert `device_interface_name`
+    /// extracts it exactly. Regression for the historical bug where
+    /// the dbcc_name offset was computed via `size_of - 2`, which
+    /// rounds up to the struct's 4-byte alignment and dropped the
+    /// first wide char (turning `\\?\STORAGE...` into `\?\STORAGE...`,
+    /// an ERROR_INVALID_NAME path).
+    fn build_blob(path: &str) -> Vec<u8> {
+        // Layout: dbcc_size(4) + dbcc_devicetype(4) + dbcc_reserved(4)
+        //       + dbcc_classguid(16) + dbcc_name (wide chars + NUL)
+        let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
+        let header = 4 + 4 + 4 + 16usize;
+        let total = header + wide.len() * 2;
+        let mut blob = vec![0u8; total];
+        blob[0..4].copy_from_slice(&(total as u32).to_le_bytes());
+        // dbcc_devicetype, dbcc_reserved, dbcc_classguid stay zero --
+        // device_interface_name doesn't read them.
+        let name_bytes_off = header;
+        for (i, &w) in wide.iter().enumerate() {
+            let off = name_bytes_off + i * 2;
+            blob[off..off + 2].copy_from_slice(&w.to_le_bytes());
+        }
+        blob
+    }
+
+    #[test]
+    fn extracts_storage_disk_path() {
+        let path = r"\\?\STORAGE#Disk#{12345678-1234-1234-1234-1234567890ab}#abcdef";
+        let blob = build_blob(path);
+        let bdi = blob.as_ptr() as *const DEV_BROADCAST_DEVICEINTERFACE_W;
+        let got = unsafe { device_interface_name(bdi) };
+        assert_eq!(got.as_deref(), Some(path));
+    }
+
+    #[test]
+    fn extracts_short_path() {
+        let path = r"\\?\X:";
+        let blob = build_blob(path);
+        let bdi = blob.as_ptr() as *const DEV_BROADCAST_DEVICEINTERFACE_W;
+        let got = unsafe { device_interface_name(bdi) };
+        assert_eq!(got.as_deref(), Some(path));
+    }
+
+    #[test]
+    fn returns_none_on_null() {
+        let got = unsafe { device_interface_name(std::ptr::null()) };
+        assert!(got.is_none());
+    }
+
+    #[test]
+    fn returns_none_when_size_is_too_small() {
+        // Size header smaller than the fixed prefix -- must not panic
+        // and must report None instead of slicing OOB.
+        let mut blob = vec![0u8; 28];
+        blob[0..4].copy_from_slice(&(20u32).to_le_bytes());
+        let bdi = blob.as_ptr() as *const DEV_BROADCAST_DEVICEINTERFACE_W;
+        let got = unsafe { device_interface_name(bdi) };
+        assert!(got.is_none());
+    }
+
+    #[test]
+    fn first_wide_char_is_preserved() {
+        // Specific regression for the `size_of - 2` bug: the leading
+        // backslash of a `\\?\...` path used to be dropped because the
+        // computed offset overshot by 2 bytes. Verify the first char
+        // is still '\\'.
+        let path = r"\\?\STORAGE#Disk#abc";
+        let blob = build_blob(path);
+        let bdi = blob.as_ptr() as *const DEV_BROADCAST_DEVICEINTERFACE_W;
+        let got = unsafe { device_interface_name(bdi) }.expect("Some");
+        assert!(got.starts_with(r"\\?\"), "expected leading \\\\?\\, got {got:?}");
+    }
+}
