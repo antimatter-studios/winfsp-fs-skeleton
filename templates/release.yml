@@ -1,0 +1,199 @@
+# Build + attach Setup.exe / MSI to a GitHub Release on every `v*` tag,
+# for both x86_64 and aarch64 Windows. Uses native runners per arch
+# (windows-latest = x64, windows-11-arm = arm64) so we don't have to
+# fight cross-compilation against the gnullvm toolchain.
+#
+# Manual trigger via workflow_dispatch is wired so a maintainer can
+# rerun the matrix without bumping a tag (handy for fixing a release
+# upload that failed mid-flight).
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. v0.1.0). Required when running manually.'
+        required: true
+        default: ''
+
+permissions:
+  contents: write   # gh release upload needs this
+
+jobs:
+  build:
+    name: build (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-latest
+            rust_target: x86_64-pc-windows-gnullvm
+            llvm_mingw_archive: llvm-mingw-20260421-ucrt-x86_64.zip
+          - arch: arm64
+            runner: windows-11-arm
+            rust_target: aarch64-pc-windows-gnullvm
+            llvm_mingw_archive: llvm-mingw-20260421-ucrt-aarch64.zip
+    runs-on: ${{ matrix.runner }}
+    env:
+      LLVM_MINGW_VER: 20260421
+      # Pin -- bumping requires verifying winfsp-rs still builds cleanly
+      # against the toolchain. The same archives are what
+      # MartinStorsjo.LLVM-MinGW.UCRT installs via winget; we fetch
+      # them directly to avoid winget's interactive prompts.
+
+    steps:
+      - name: checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: install Rust + gnullvm target
+        shell: pwsh
+        run: |
+          rustup install stable
+          rustup default stable
+          rustup target add ${{ matrix.rust_target }}
+          rustc --version
+
+      - name: install LLVM-MinGW (gnullvm toolchain, ${{ matrix.arch }})
+        shell: pwsh
+        run: |
+          # LLVM-MinGW provides the gnullvm runtime + sysroot. Its
+          # standalone GitHub-release zip does NOT ship libclang.dll
+          # (only clang.exe and friends), so libclang for bindgen is
+          # installed via a separate step below.
+          $url = "https://github.com/mstorsjo/llvm-mingw/releases/download/${{ env.LLVM_MINGW_VER }}/${{ matrix.llvm_mingw_archive }}"
+          $zip = "$env:RUNNER_TEMP\llvm-mingw.zip"
+          Invoke-WebRequest -Uri $url -OutFile $zip
+          Expand-Archive -Path $zip -DestinationPath "$env:RUNNER_TEMP\llvm-mingw" -Force
+          $extracted = Get-ChildItem "$env:RUNNER_TEMP\llvm-mingw" -Directory | Select-Object -First 1
+          $bin = Join-Path $extracted.FullName 'bin'
+          "Adding $bin to PATH"
+          Add-Content -Path $env:GITHUB_PATH -Value $bin
+
+      - name: install LLVM (libclang for bindgen)
+        uses: KyleMayes/install-llvm-action@v2
+        with:
+          # Pin to LLVM 18 -- the last release with stable Windows
+          # ARM64 binaries on the action's manifest, and old enough to
+          # parse LLVM-MinGW's clang-22 sysroot headers without the
+          # AVX-512 self-compile errors a same-version libclang trips
+          # on. Action sets LIBCLANG_PATH for us.
+          version: '18.1'
+          directory: ${{ runner.temp }}/llvm
+
+      - name: install WinFsp (build-time headers + libs)
+        shell: pwsh
+        run: |
+          choco install winfsp --yes --no-progress
+          # WinFsp installs to "C:\Program Files (x86)\WinFsp\" on x64
+          # hosts and to "C:\Program Files\WinFsp\" on arm64; winfsp-rs
+          # auto-discovers via the registry.
+
+      - name: install WiX 7
+        shell: pwsh
+        run: |
+          dotnet tool install --global wix
+          wix eula accept wix7
+          wix --version
+
+      - name: patch vendored fsctl.h for x86 MSVC-compat _ReadWriteBarrier collision
+        if: matrix.arch == 'x64'
+        shell: pwsh
+        run: |
+          # Background: clang's MSVC compatibility (auto-enabled by the
+          # winfsp-sys bindgen invocation's `--target=...-pc-windows-msvc`)
+          # predefines _ReadWriteBarrier as a 0-arg function-like macro
+          # via the included intrin.h. WinFsp's fsctl.h then
+          # forward-declares
+          #     void _ReadWriteBarrier(void);
+          # which the preprocessor mangles into `void ;` -- "variable
+          # has incomplete type 'void'", with a paired "too many
+          # arguments to function-like macro invocation" error.
+          # `-U_ReadWriteBarrier` doesn't help because intrin.h is
+          # included after our -U processes.
+          #
+          # Wrap each forward-decl in a #pragma push_macro / #undef /
+          # #pragma pop_macro so the macro is hidden at exactly the
+          # point we need to declare the function.
+          # arm64 hits a different code branch (__dmb intrinsic) so
+          # this patch is x86-only.
+          $f = 'vendor/winfsp-rs/winfsp-sys/winfsp/inc/winfsp/fsctl.h'
+          $content = Get-Content $f -Raw
+          $needle = '    void _ReadWriteBarrier(void);'
+          $replacement = "#pragma push_macro(`"_ReadWriteBarrier`")`n#undef _ReadWriteBarrier`n    void _ReadWriteBarrier(void);`n#pragma pop_macro(`"_ReadWriteBarrier`")"
+          $content = $content -replace [regex]::Escape($needle), $replacement
+          Set-Content -Path $f -Value $content -NoNewline
+          "Patched $f"
+          Select-String -Path $f -Pattern '_ReadWriteBarrier' | Select-Object LineNumber, Line | Format-Table -AutoSize
+
+      - name: cargo build --release --features mount,service
+        shell: pwsh
+        env:
+          # Defang AVX-512 intrinsic header compilation -- cross-version
+          # libclang/sysroot self-compiles can fail there. WinFsp's ABI
+          # doesn't reference any AVX-512 types so neutering the macros
+          # is safe.
+          BINDGEN_EXTRA_CLANG_ARGS: -D__AVX512F__=0 -D__AVX512BW__=0 -D__AVX512CD__=0 -D__AVX512DQ__=0 -D__AVX512VL__=0 -D__AVX512VBMI__=0 -D__AVX512VBMI2__=0
+        run: |
+          cargo build --release --features mount,service --target ${{ matrix.rust_target }}
+          $exe = "target\${{ matrix.rust_target }}\release\ext4.exe"
+          if (-not (Test-Path $exe)) { throw "Build did not produce $exe" }
+          "Built $exe ($((Get-Item $exe).Length) bytes)"
+
+      - name: add WiX extensions + run installer/build.ps1
+        shell: pwsh
+        run: |
+          # Add the two extensions our .wxs files need. Doing this in
+          # the same step as build.ps1 because the global cache from a
+          # separate earlier step doesn't always persist to here on
+          # the windows-11-arm runner (WIX0144 "extension could not be
+          # found").
+          #
+          # `2>&1` so add failures show up in the job log; otherwise
+          # they vanish silently and we only see the WIX0144 from the
+          # eventual build call.
+          $ErrorActionPreference = 'Stop'
+          Write-Host "Adding WixToolset.Util.wixext..."
+          wix extension add -g WixToolset.Util.wixext 2>&1
+          if ($LASTEXITCODE -ne 0) { throw "wix extension add Util failed: $LASTEXITCODE" }
+          Write-Host "Adding WixToolset.BootstrapperApplications.wixext..."
+          wix extension add -g WixToolset.BootstrapperApplications.wixext 2>&1
+          if ($LASTEXITCODE -ne 0) { throw "wix extension add BootstrapperApplications failed: $LASTEXITCODE" }
+          Write-Host "Listing registered extensions:"
+          wix extension list 2>&1
+          $exe = "target\${{ matrix.rust_target }}\release\ext4.exe"
+          installer\build.ps1 -ExePath $exe -Arch ${{ matrix.arch }}
+
+      - name: upload Setup.exe + MSI as workflow artefacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ext4-win-driver-${{ matrix.arch }}
+          path: |
+            dist/ext4-win-driver-*-${{ matrix.arch }}-Setup.exe
+            dist/ext4-win-driver-*-${{ matrix.arch }}.msi
+          if-no-files-found: error
+
+      - name: attach to GitHub Release (tag push only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $tag = '${{ github.ref_name }}'
+          gh release upload $tag (Get-ChildItem dist\ext4-win-driver-*-${{ matrix.arch }}-Setup.exe).FullName --clobber
+          gh release upload $tag (Get-ChildItem dist\ext4-win-driver-*-${{ matrix.arch }}.msi).FullName --clobber
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: attach to GitHub Release (manual dispatch)
+        if: github.event_name == 'workflow_dispatch'
+        shell: pwsh
+        run: |
+          $tag = '${{ inputs.tag }}'
+          if (-not $tag) { throw "tag input is required for workflow_dispatch" }
+          gh release upload $tag (Get-ChildItem dist\ext4-win-driver-*-${{ matrix.arch }}-Setup.exe).FullName --clobber
+          gh release upload $tag (Get-ChildItem dist\ext4-win-driver-*-${{ matrix.arch }}.msi).FullName --clobber
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
