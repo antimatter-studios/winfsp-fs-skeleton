@@ -86,6 +86,13 @@ the skeleton more permissive would only add a license-boundary
 hazard for future contributors without buying anyone real
 flexibility.
 
+## Minimum supported Rust version
+
+1.70 -- needed for `std::sync::OnceLock`, which the service-mode
+dispatcher uses to stash backend-supplied constants between the SCM
+FFI shim and the rest of the module. We don't enforce MSRV in CI;
+bumping it should be a deliberate, advertised change.
+
 ## Vendoring
 
 Add the skeleton as a git submodule and a path-dependency in your
