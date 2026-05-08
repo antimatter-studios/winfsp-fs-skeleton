@@ -64,7 +64,7 @@ mod imp {
     //! `wnd_proc::<B>` per consumer, and that monomorphised function
     //! pointer is what we hand to `RegisterClassW`.
 
-    use anyhow::{Context, Result, anyhow};
+    use anyhow::{anyhow, Context, Result};
     use std::collections::HashMap;
     use std::marker::PhantomData;
     use std::path::Path;
@@ -76,25 +76,37 @@ mod imp {
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows_sys::Win32::System::Threading::GetCurrentThreadId;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        CreateWindowExW, DBT_DEVICEARRIVAL, DBT_DEVICEREMOVECOMPLETE, DBT_DEVTYP_DEVICEINTERFACE,
-        DEVICE_NOTIFY_WINDOW_HANDLE, DEV_BROADCAST_DEVICEINTERFACE_W, DefWindowProcW,
-        DestroyWindow, DispatchMessageW, GWLP_USERDATA, GetMessageW, GetWindowLongPtrW,
-        HWND_MESSAGE, MSG, PostThreadMessageW, RegisterClassW, RegisterDeviceNotificationW,
+        CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
+        GetWindowLongPtrW, PostThreadMessageW, RegisterClassW, RegisterDeviceNotificationW,
         SetWindowLongPtrW, TranslateMessage, UnregisterClassW, UnregisterDeviceNotification,
-        WM_DEVICECHANGE, WM_QUIT, WNDCLASSW,
+        DBT_DEVICEARRIVAL, DBT_DEVICEREMOVECOMPLETE, DBT_DEVTYP_DEVICEINTERFACE,
+        DEVICE_NOTIFY_WINDOW_HANDLE, DEV_BROADCAST_DEVICEINTERFACE_W, GWLP_USERDATA, HWND_MESSAGE,
+        MSG, WM_DEVICECHANGE, WM_QUIT, WNDCLASSW,
     };
 
-    use crate::FsBackend;
     use crate::probe;
+    use crate::FsBackend;
 
     /// Window class name. Wide-encoded inline to avoid pulling in
     /// widestring. Identical across consumers because each consumer
     /// runs in its own process; the class name only needs to be
     /// unique within the process.
     const CLASS_NAME: &[u16] = &[
-        b'w' as u16, b'f' as u16, b's' as u16, b'_' as u16, b's' as u16, b'k' as u16,
-        b'e' as u16, b'l' as u16, b'_' as u16, b'w' as u16, b'a' as u16, b't' as u16,
-        b'c' as u16, b'h' as u16, 0,
+        b'w' as u16,
+        b'f' as u16,
+        b's' as u16,
+        b'_' as u16,
+        b's' as u16,
+        b'k' as u16,
+        b'e' as u16,
+        b'l' as u16,
+        b'_' as u16,
+        b'w' as u16,
+        b'a' as u16,
+        b't' as u16,
+        b'c' as u16,
+        b'h' as u16,
+        0,
     ];
 
     /// Per-mount bookkeeping: the spawned `<consumer> mount` child
@@ -319,10 +331,7 @@ mod imp {
                     match probe_at_offset::<B>(disk_path, 0) {
                         Ok(true) => spawn_partition_mount::<B>(state, disk_path, 0),
                         Ok(false) => {}
-                        Err(e) => eprintln!(
-                            "[{}] probe {disk_path} whole-disk: {e:#}",
-                            B::FS_NAME
-                        ),
+                        Err(e) => eprintln!("[{}] probe {disk_path} whole-disk: {e:#}", B::FS_NAME),
                     }
                 } else {
                     eprintln!(
@@ -423,7 +432,10 @@ mod imp {
         };
         let drive_arg = format!("{mount_letter}:");
         let mut cmd = Command::new(&exe);
-        cmd.arg("mount").arg(disk_path).arg("--drive").arg(&drive_arg);
+        cmd.arg("mount")
+            .arg(disk_path)
+            .arg("--drive")
+            .arg(&drive_arg);
         if n > 0 {
             cmd.arg("--part").arg(n.to_string());
         }

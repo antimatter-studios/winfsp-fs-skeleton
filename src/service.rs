@@ -51,7 +51,9 @@ pub fn run<B: FsBackend>() -> Result<()> {
     // (which can't be generic) can reach them.
     imp::FS_NAME.set(B::FS_NAME).ok();
     imp::SERVICE_NAME.set(B::SERVICE_NAME).ok();
-    imp::LAUNCHER_SERVICE_CLASS.set(B::LAUNCHER_SERVICE_CLASS).ok();
+    imp::LAUNCHER_SERVICE_CLASS
+        .set(B::LAUNCHER_SERVICE_CLASS)
+        .ok();
     imp::DETECT.set(B::detect as fn(&[u8]) -> bool).ok();
     imp::run()
 }
@@ -72,7 +74,7 @@ pub fn run<B: FsBackend>() -> Result<()> {
 
 #[cfg(all(target_os = "windows", feature = "service"))]
 mod imp {
-    use anyhow::{Context, Result, anyhow};
+    use anyhow::{anyhow, Context, Result};
     use std::collections::HashMap;
     use std::ffi::OsString;
     use std::path::{Path, PathBuf};
@@ -93,12 +95,12 @@ mod imp {
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows_sys::Win32::System::Threading::GetCurrentThreadId;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        CreateWindowExW, DBT_DEVICEARRIVAL, DBT_DEVICEREMOVECOMPLETE, DBT_DEVTYP_DEVICEINTERFACE,
-        DEVICE_NOTIFY_WINDOW_HANDLE, DEV_BROADCAST_DEVICEINTERFACE_W, DefWindowProcW,
-        DestroyWindow, DispatchMessageW, GWLP_USERDATA, GetMessageW, GetWindowLongPtrW,
-        HWND_MESSAGE, MSG, PostThreadMessageW, RegisterClassW, RegisterDeviceNotificationW,
+        CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
+        GetWindowLongPtrW, PostThreadMessageW, RegisterClassW, RegisterDeviceNotificationW,
         SetWindowLongPtrW, TranslateMessage, UnregisterClassW, UnregisterDeviceNotification,
-        WM_DEVICECHANGE, WM_QUIT, WNDCLASSW,
+        DBT_DEVICEARRIVAL, DBT_DEVICEREMOVECOMPLETE, DBT_DEVTYP_DEVICEINTERFACE,
+        DEVICE_NOTIFY_WINDOW_HANDLE, DEV_BROADCAST_DEVICEINTERFACE_W, GWLP_USERDATA, HWND_MESSAGE,
+        MSG, WM_DEVICECHANGE, WM_QUIT, WNDCLASSW,
     };
 
     use crate::probe;
@@ -112,9 +114,15 @@ mod imp {
     pub(super) static LAUNCHER_SERVICE_CLASS: OnceLock<&'static str> = OnceLock::new();
     pub(super) static DETECT: OnceLock<fn(&[u8]) -> bool> = OnceLock::new();
 
-    fn fs_name() -> &'static str { FS_NAME.get().copied().unwrap_or("fs") }
-    fn service_name() -> &'static str { SERVICE_NAME.get().copied().unwrap_or("WinFspFsWatcher") }
-    fn launcher_class() -> &'static str { LAUNCHER_SERVICE_CLASS.get().copied().unwrap_or("fs-mount") }
+    fn fs_name() -> &'static str {
+        FS_NAME.get().copied().unwrap_or("fs")
+    }
+    fn service_name() -> &'static str {
+        SERVICE_NAME.get().copied().unwrap_or("WinFspFsWatcher")
+    }
+    fn launcher_class() -> &'static str {
+        LAUNCHER_SERVICE_CLASS.get().copied().unwrap_or("fs-mount")
+    }
     fn detect(bytes: &[u8]) -> bool {
         match DETECT.get() {
             Some(f) => f(bytes),
@@ -127,8 +135,18 @@ mod imp {
     // ---------------------------------------------------------------------
 
     const CLASS_NAME: &[u16] = &[
-        b'w' as u16, b'f' as u16, b's' as u16, b'_' as u16, b's' as u16, b'k' as u16,
-        b'e' as u16, b'l' as u16, b'_' as u16, b's' as u16, b'v' as u16, b'c' as u16,
+        b'w' as u16,
+        b'f' as u16,
+        b's' as u16,
+        b'_' as u16,
+        b's' as u16,
+        b'k' as u16,
+        b'e' as u16,
+        b'l' as u16,
+        b'_' as u16,
+        b's' as u16,
+        b'v' as u16,
+        b'c' as u16,
         0,
     ];
 
@@ -418,16 +436,10 @@ mod imp {
                     match probe_at_offset(disk_path, 0) {
                         Ok(true) => spawn_partition_mount(state, disk_path, 0),
                         Ok(false) => {}
-                        Err(e) => eprintln!(
-                            "[{}] probe {disk_path} whole-disk: {e:#}",
-                            fs_name()
-                        ),
+                        Err(e) => eprintln!("[{}] probe {disk_path} whole-disk: {e:#}", fs_name()),
                     }
                 } else {
-                    eprintln!(
-                        "[{}] partition::list({disk_path}) failed: {e:#}",
-                        fs_name()
-                    );
+                    eprintln!("[{}] partition::list({disk_path}) failed: {e:#}", fs_name());
                 }
                 return;
             }
@@ -540,7 +552,11 @@ mod imp {
             fn WTSGetActiveConsoleSessionId() -> u32;
         }
         let id = unsafe { WTSGetActiveConsoleSessionId() };
-        if id == 0xFFFF_FFFF { None } else { Some(id) }
+        if id == 0xFFFF_FFFF {
+            None
+        } else {
+            Some(id)
+        }
     }
 
     // ---------------------------------------------------------------------
@@ -626,8 +642,8 @@ mod imp {
     fn winfsp_install_dir() -> Result<PathBuf> {
         use windows_sys::Win32::Foundation::ERROR_SUCCESS;
         use windows_sys::Win32::System::Registry::{
-            HKEY, HKEY_LOCAL_MACHINE, KEY_QUERY_VALUE, KEY_WOW64_32KEY, REG_SZ, RegCloseKey,
-            RegOpenKeyExW, RegQueryValueExW,
+            RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_LOCAL_MACHINE,
+            KEY_QUERY_VALUE, KEY_WOW64_32KEY, REG_SZ,
         };
 
         let subkey = wide_z("SOFTWARE\\WinFsp");

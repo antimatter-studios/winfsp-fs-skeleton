@@ -130,8 +130,7 @@ impl BlockSource for FileSource {
             let aligned_end = (end + self.sector - 1) & !(self.sector - 1);
             aligned_end - aligned_offset
         };
-        if self.sector == 1
-            || (aligned_offset == offset && aligned_len_needed == buf.len() as u64)
+        if self.sector == 1 || (aligned_offset == offset && aligned_len_needed == buf.len() as u64)
         {
             let mut total = 0usize;
             while total < buf.len() {
@@ -285,10 +284,8 @@ fn compute_size(file: &File) -> Result<u64> {
 #[cfg(windows)]
 fn win32_device_size(file: &File) -> Result<u64> {
     use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::System::Ioctl::{GET_LENGTH_INFORMATION, IOCTL_DISK_GET_LENGTH_INFO};
     use windows_sys::Win32::System::IO::DeviceIoControl;
-    use windows_sys::Win32::System::Ioctl::{
-        GET_LENGTH_INFORMATION, IOCTL_DISK_GET_LENGTH_INFO,
-    };
     let mut info: GET_LENGTH_INFORMATION = unsafe { std::mem::zeroed() };
     let mut returned: u32 = 0;
     let ok = unsafe {
@@ -315,10 +312,8 @@ fn win32_device_size(file: &File) -> Result<u64> {
 #[cfg(windows)]
 fn detect_sector_alignment(file: &File) -> u64 {
     use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::System::Ioctl::{DISK_GEOMETRY_EX, IOCTL_DISK_GET_DRIVE_GEOMETRY_EX};
     use windows_sys::Win32::System::IO::DeviceIoControl;
-    use windows_sys::Win32::System::Ioctl::{
-        DISK_GEOMETRY_EX, IOCTL_DISK_GET_DRIVE_GEOMETRY_EX,
-    };
 
     let mut g: DISK_GEOMETRY_EX = unsafe { std::mem::zeroed() };
     let mut returned: u32 = 0;
@@ -356,7 +351,9 @@ mod tests {
     /// be checked against `expected_byte(offset)`.
     fn tempfile_with_pattern(len: usize) -> (tempfile::NamedTempFile, Vec<u8>) {
         let mut f = tempfile::NamedTempFile::new().expect("tempfile");
-        let bytes: Vec<u8> = (0..len).map(|i| (i as u8).wrapping_mul(7).wrapping_add(13)).collect();
+        let bytes: Vec<u8> = (0..len)
+            .map(|i| (i as u8).wrapping_mul(7).wrapping_add(13))
+            .collect();
         f.write_all(&bytes).expect("write");
         f.flush().expect("flush");
         (f, bytes)

@@ -10,7 +10,7 @@
 //! the Win32 raw-device `BlockDevice` impl.
 
 use crate::device::{BlockSource, FileSource};
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use std::path::Path;
 
 const SECTOR: u64 = 512;
@@ -202,7 +202,10 @@ mod tests {
         static COUNTER: AtomicU32 = AtomicU32::new(0);
         let n = COUNTER.fetch_add(1, Ordering::Relaxed);
         let mut p = std::env::temp_dir();
-        p.push(format!("ext4_win_driver_{tag}_{}_{n}.bin", std::process::id()));
+        p.push(format!(
+            "ext4_win_driver_{tag}_{}_{n}.bin",
+            std::process::id()
+        ));
         p
     }
 

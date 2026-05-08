@@ -170,6 +170,9 @@ mod tests {
         let blob = build_blob(path);
         let bdi = blob.as_ptr() as *const DEV_BROADCAST_DEVICEINTERFACE_W;
         let got = unsafe { device_interface_name(bdi) }.expect("Some");
-        assert!(got.starts_with(r"\\?\"), "expected leading \\\\?\\, got {got:?}");
+        assert!(
+            got.starts_with(r"\\?\"),
+            "expected leading \\\\?\\, got {got:?}"
+        );
     }
 }
