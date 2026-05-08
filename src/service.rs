@@ -59,9 +59,13 @@ pub fn run<B: FsBackend>() -> Result<()> {
 #[cfg(not(all(target_os = "windows", feature = "service")))]
 pub fn run<B: FsBackend>() -> Result<()> {
     eprintln!(
-        "[{}] service: this build was compiled without the `service` feature; \
-         rebuild the consumer crate with the feature enabled and a Windows target.",
-        B::FS_NAME
+        "[{fs}] service is unavailable in this build. Reasons:\n  \
+         - target is not Windows ({os})\n  \
+         - `service` feature is not enabled (feature = {feat})\n\
+         Rebuild on a Windows host with --features mount,service to enable.",
+        fs = B::FS_NAME,
+        os = std::env::consts::OS,
+        feat = cfg!(feature = "service"),
     );
     Ok(())
 }

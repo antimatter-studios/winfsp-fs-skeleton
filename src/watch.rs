@@ -39,8 +39,11 @@ pub fn run<B: FsBackend>() -> Result<()> {
 #[cfg(not(target_os = "windows"))]
 pub fn run<B: FsBackend>() -> Result<()> {
     eprintln!(
-        "[{}] watch is Windows-only -- this build is non-Windows, exiting.",
-        B::FS_NAME
+        "[{fs}] watch is unavailable in this build. Reasons:\n  \
+         - target is not Windows ({os})\n\
+         Rebuild on a Windows host with --features mount to enable.",
+        fs = B::FS_NAME,
+        os = std::env::consts::OS,
     );
     Ok(())
 }
