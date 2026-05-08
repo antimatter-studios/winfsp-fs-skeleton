@@ -30,6 +30,10 @@ ctrlc = "3"
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
+    # Win32_Graphics_Gdi: gates WNDCLASSW + RegisterClassW even though
+    # we don't actually do any GDI drawing -- those types are
+    # nominally graphics-adjacent in windows-sys's feature split.
+    "Win32_Graphics_Gdi",
     "Win32_Storage_FileSystem",
     "Win32_System_IO",
     "Win32_System_Ioctl",
