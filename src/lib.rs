@@ -72,7 +72,12 @@ pub mod probe;
 
 pub mod watch;
 
-#[cfg(feature = "service")]
+// `service` is exposed unconditionally so consumers don't have to
+// know about the skeleton's internal feature topology -- their
+// dispatch can always say `winfsp_fs_skeleton::service::run::<B>()`.
+// The actual SCM dispatcher is gated on `feature = "service"` AND a
+// Windows target *inside* service.rs; non-windows / no-feature
+// builds get a stub `run` that prints a hint and returns Ok.
 pub mod service;
 
 /// The seam every consumer plugs into. Four constants identify the
