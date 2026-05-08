@@ -22,6 +22,32 @@ to see what's a parameter and what's structural.
 | `templates/winget/locale.en-US.yaml` | `winget/v<X.Y.Z>/<Publisher>.<Package>.locale.en-US.yaml` |
 | `templates/winget/version.yaml` | `winget/v<X.Y.Z>/<Publisher>.<Package>.yaml` |
 
+## Scripted onboarding
+
+If you'd rather not do the copy + sed dance by hand, run
+`./customize.sh` from this directory. Typical invocation:
+
+```sh
+./customize.sh \
+  --name ntfs-win-driver \
+  --fs-name ntfs \
+  --service-name NtfsFsWatcher \
+  --launcher-class ntfs-mount \
+  --file-extension vhd \
+  --publisher-id AntimatterStudios \
+  --publisher-name "Antimatter Studios" \
+  --manufacturer "Your Name" \
+  --winfsp-version 2.1.25156 \
+  --winfsp-sha256 0123abcd... \
+  --target /path/to/new-consumer-repo
+```
+
+The target must exist and be empty (or contain only `.git/`). Fresh
+GUIDs for `MSI UpgradeCode` + `Bundle UpgradeCode` are generated via
+`uuidgen` if `--upgrade-code-msi` / `--upgrade-code-bundle` are
+omitted. The script's substitution table mirrors the table below --
+keep them in sync if you tweak either.
+
 ## Substitutions
 
 Find/replace these tokens with your project's values. Most appear in
