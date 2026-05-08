@@ -309,7 +309,18 @@ mod imp {
                 // subcommand should accept `--part 0` as "no
                 // partition; mount the whole device."
                 if format!("{e:#}").contains("no MBR signature") {
-                    spawn_partition_mount::<B>(state, disk_path, 0);
+                    // Probe the whole disk at offset 0 for the
+                    // consumer's FS before spawning. Otherwise
+                    // every unpartitioned non-FS disk triggers a
+                    // mount that fails downstream.
+                    match probe_at_offset::<B>(disk_path, 0) {
+                        Ok(true) => spawn_partition_mount::<B>(state, disk_path, 0),
+                        Ok(false) => {}
+                        Err(e) => eprintln!(
+                            "[{}] probe {disk_path} whole-disk: {e:#}",
+                            B::FS_NAME
+                        ),
+                    }
                 } else {
                     eprintln!(
                         "[{}] partition::list({disk_path}) failed: {e:#}",

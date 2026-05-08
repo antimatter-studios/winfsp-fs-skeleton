@@ -407,7 +407,18 @@ mod imp {
             Ok(v) => v,
             Err(e) => {
                 if format!("{e:#}").contains("no MBR signature") {
-                    spawn_partition_mount(state, disk_path, 0);
+                    // Probe the whole disk at offset 0 for the
+                    // consumer's FS before spawning. Otherwise
+                    // every unpartitioned non-FS disk triggers a
+                    // launchctl spawn that fails downstream.
+                    match probe_at_offset(disk_path, 0) {
+                        Ok(true) => spawn_partition_mount(state, disk_path, 0),
+                        Ok(false) => {}
+                        Err(e) => eprintln!(
+                            "[{}] probe {disk_path} whole-disk: {e:#}",
+                            fs_name()
+                        ),
+                    }
                 } else {
                     eprintln!(
                         "[{}] partition::list({disk_path}) failed: {e:#}",
