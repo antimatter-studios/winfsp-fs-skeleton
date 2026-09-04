@@ -63,11 +63,17 @@ for you.
 ### 2. Bootstrap the consumer repo
 
 ```sh
+# The skeleton is checked out as a SIBLING of the driver, not inside
+# it. Every existing driver works this way -- the pin lives in the
+# consumer's chores.yml and `chore siblings` fetches it -- so one copy
+# on a machine serves all of them. A submodule would pin a copy per
+# consumer, which is how the same crate ends up on several versions at
+# once with nothing reporting it.
+git clone https://github.com/antimatter-studios/winfsp-fs-skeleton
 mkdir myfs-win-driver && cd myfs-win-driver
 git init
-git submodule add https://github.com/antimatter-studios/winfsp-fs-skeleton vendor/winfsp-fs-skeleton
 
-./vendor/winfsp-fs-skeleton/templates/customize.sh \
+../winfsp-fs-skeleton/templates/customize.sh \
   --target . \
   --name myfs-win-driver \
   --fs-name myfs \
@@ -102,7 +108,7 @@ edition = "2021"
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
-winfsp-fs-skeleton = { path = "vendor/winfsp-fs-skeleton", features = ["service"] }
+winfsp-fs-skeleton = { path = "../winfsp-fs-skeleton", features = ["service"] }
 ```
 
 ```rust
