@@ -83,6 +83,35 @@ pub fn unix_to_filetime(secs: i64, nsec: u32) -> u64 {
         .saturating_add((nsec as u64) / 100)
 }
 
+/// The inverse: a Windows FILETIME back to Unix seconds and
+/// nanoseconds.
+///
+/// `None` means **only** the zero sentinel, which is how WinFSP spells
+/// "leave this timestamp unchanged" in `set_basic_info`. Every other
+/// value converts.
+///
+/// That is the whole point, and the drivers' own copies got it wrong in
+/// both directions: they returned `None` for any FILETIME predating the
+/// Unix epoch — silently discarding a time the user asked for, since
+/// the caller reads `None` as "leave unchanged" — and clamped anything
+/// past 2106 to a nonsense value, because they returned `u32` seconds.
+/// A negative Unix second is perfectly ordinary and the filesystems
+/// store it, so the signed [`Timestamp`] is the honest return type.
+///
+/// Sub-second precision below 100 ns cannot survive the round trip;
+/// FILETIME has no bits for it.
+pub fn filetime_to_unix(filetime: u64) -> Option<Timestamp> {
+    if filetime == 0 {
+        return None;
+    }
+    let seconds_since_1601 = (filetime / FILETIME_TICKS_PER_SEC) as i64;
+    let nsec = ((filetime % FILETIME_TICKS_PER_SEC) * 100) as u32;
+    Some(Timestamp {
+        secs: seconds_since_1601 - FILETIME_EPOCH_OFFSET_SEC as i64,
+        nsec,
+    })
+}
+
 /// `\foo\bar` → `/foo/bar`, and an empty path to `/`.
 ///
 /// WinFsp hands paths in with backslashes and no leading slash for the
@@ -514,5 +543,59 @@ mod tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod filetime_inverse_tests {
+    use super::*;
+
+    /// Zero is WinFSP's "leave unchanged" sentinel, and the ONLY input
+    /// that has no timestamp. The drivers' own copies also returned
+    /// `None` for pre-1970 times, which reads to the caller as "leave
+    /// unchanged" and silently discards what the user asked for.
+    #[test]
+    fn only_zero_means_no_timestamp() {
+        assert!(filetime_to_unix(0).is_none());
+        assert!(filetime_to_unix(1).is_some());
+        // A FILETIME well before 1970 — 1601 plus one second.
+        assert!(filetime_to_unix(FILETIME_TICKS_PER_SEC).is_some());
+    }
+
+    /// Round-trips across the boundaries that the narrower copies could
+    /// not express: before 1970, past 2038, and past 2106 where a `u32`
+    /// return would clamp.
+    #[test]
+    fn conversion_round_trips_in_both_directions() {
+        for secs in [
+            i64::from(i32::MIN), // 1901-12-13, ext4's floor
+            -315_619_200,        // 1960
+            -1,                  // one second before the epoch
+            0,
+            946_684_800,             // 2000
+            i64::from(i32::MAX),     // 2038-01-19
+            i64::from(u32::MAX) + 1, // past where a u32 second count ends
+            4_102_444_800,           // 2100
+        ] {
+            let ft = unix_to_filetime(secs, 0);
+            let back = filetime_to_unix(ft).expect("only zero has no timestamp");
+            assert_eq!(back.secs, secs, "seconds did not round trip for {secs}");
+            assert_eq!(back.nsec, 0);
+        }
+    }
+
+    /// Sub-second precision survives to FILETIME's own resolution of
+    /// 100 ns, and no further — the remainder is lost in the format,
+    /// not in this code.
+    #[test]
+    fn sub_second_precision_survives_to_a_hundred_nanoseconds() {
+        let ft = unix_to_filetime(1, 999_999_900);
+        let back = filetime_to_unix(ft).unwrap();
+        assert_eq!(back.secs, 1);
+        assert_eq!(back.nsec, 999_999_900);
+
+        // Below 100 ns there is nowhere to put it.
+        let rounded = filetime_to_unix(unix_to_filetime(1, 99)).unwrap();
+        assert_eq!(rounded.nsec, 0);
     }
 }
