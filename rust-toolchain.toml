@@ -1,0 +1,11 @@
+[toolchain]
+# Pinned: floating "stable" drifts under us — a new clippy release adds a lint,
+# `-D warnings` turns it into a hard CI error even though Cargo.lock hasn't moved.
+# Bump this intentionally when we're ready to audit the new lint set.
+#
+# 1.95.0 is the family-wide pin. It is not a free choice here: this crate is
+# statically linked into the win-drivers alongside the am-fs-* drivers, and two
+# crates built by different toolchains link two copies of _rust_eh_personality.
+# Move this only in lockstep with the rest of the family.
+channel = "1.95.0"
+components = ["rustfmt", "clippy"]
