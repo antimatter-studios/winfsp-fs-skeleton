@@ -45,26 +45,42 @@ pub const FILETIME_TICKS_PER_SEC: u64 = 10_000_000;
 /// Convert a Unix timestamp to a Windows FILETIME (100-ns intervals
 /// since 1601-01-01).
 ///
-/// Takes `u64` seconds deliberately. Several filesystems in this family
-/// store 64-bit timestamps — ext4 with high-precision attributes, XFS
-/// v5, EROFS — and a `u32` parameter silently truncates them. Passing
-/// `0` for `nsec` gives the whole-second conversion, so this is the
-/// only entry point needed.
+/// Takes **signed** 64-bit seconds. Two separate reasons, and the first
+/// version of this got only one of them right:
 ///
-/// Saturating rather than wrapping: a timestamp far enough in the
-/// future to overflow is corrupt or synthetic, and clamping it to the
-/// end of representable time is a strictly better answer than wrapping
-/// it to 1601.
+/// - 64 bits, because several filesystems here store 64-bit timestamps
+///   (ext4 with high-precision attributes, XFS v5, EROFS) and a `u32`
+///   parameter silently truncates them.
+/// - signed, because a Unix timestamp before 1970 is negative, and
+///   FILETIME can represent it perfectly well — its epoch is **1601**,
+///   which is 369 years EARLIER than Unix's. A negative Unix second is
+///   still a positive FILETIME. An unsigned parameter cannot express
+///   the input, so the loss happens at the call site, before this
+///   function ever runs.
+///
+/// Passing `0` for `nsec` gives the whole-second conversion, so this is
+/// the only entry point needed.
+///
+/// Saturating rather than wrapping: a timestamp far enough out to
+/// overflow is corrupt or synthetic, and clamping to the end of
+/// representable time beats wrapping to 1601. A time before 1601 is
+/// likewise clamped to 0 — FILETIME has no way to say "earlier than my
+/// epoch", and 0 is the value Windows itself uses for "not set".
 ///
 /// FILETIME's resolution is 100 ns, so `nsec` is rounded **down** to
 /// the nearest 100 — the same direction the filesystem itself would
 /// round, and the direction that never reports a file as newer than it
 /// is.
-pub fn unix_to_filetime(secs: u64, nsec: u32) -> u64 {
-    let whole = FILETIME_EPOCH_OFFSET_SEC
-        .saturating_add(secs)
-        .saturating_mul(FILETIME_TICKS_PER_SEC);
-    whole.saturating_add((nsec as u64) / 100)
+pub fn unix_to_filetime(secs: i64, nsec: u32) -> u64 {
+    let since_filetime_epoch = secs.saturating_add(FILETIME_EPOCH_OFFSET_SEC as i64);
+    if since_filetime_epoch < 0 {
+        // Before 1601. Unreachable from any real filesystem timestamp —
+        // ext4 bottoms out at 1901 — but a corrupt image can name one.
+        return 0;
+    }
+    (since_filetime_epoch as u64)
+        .saturating_mul(FILETIME_TICKS_PER_SEC)
+        .saturating_add((nsec as u64) / 100)
 }
 
 /// `\foo\bar` → `/foo/bar`, and an empty path to `/`.
@@ -146,14 +162,7 @@ impl Timestamp {
     /// FILETIME, which counts from 1601, so it is converted rather than
     /// clamped to the epoch.
     pub fn to_filetime(self) -> u64 {
-        if self.secs < 0 {
-            let before = self.secs.unsigned_abs();
-            return FILETIME_EPOCH_OFFSET_SEC
-                .saturating_sub(before)
-                .saturating_mul(FILETIME_TICKS_PER_SEC)
-                .saturating_add((self.nsec as u64) / 100);
-        }
-        unix_to_filetime(self.secs as u64, self.nsec)
+        unix_to_filetime(self.secs, self.nsec)
     }
 }
 
@@ -275,8 +284,8 @@ mod tests {
     fn a_timestamp_beyond_the_u32_range_survives() {
         // 2106-02-07T06:28:16Z — one second past u32::MAX seconds.
         let past_2106 = u32::MAX as u64 + 1;
-        let got = unix_to_filetime(past_2106, 0);
-        let at_u32_max = unix_to_filetime(u32::MAX as u64, 0);
+        let got = unix_to_filetime(past_2106 as i64, 0);
+        let at_u32_max = unix_to_filetime(i64::from(u32::MAX), 0);
         assert!(
             got > at_u32_max,
             "a timestamp past 2106 must be later than one at the u32 ceiling, \
@@ -298,7 +307,59 @@ mod tests {
     /// not come back as 1601.
     #[test]
     fn an_absurd_timestamp_saturates_rather_than_wrapping() {
-        assert_eq!(unix_to_filetime(u64::MAX, 0), u64::MAX);
+        assert_eq!(unix_to_filetime(i64::MAX, 0), u64::MAX);
+    }
+
+    /// A time before 1970 is negative in Unix and perfectly ordinary in
+    /// FILETIME, whose epoch is 1601 — 369 years earlier. The `u64`
+    /// parameter this replaced could not express the input at all, so
+    /// the loss happened at the call site.
+    #[test]
+    fn a_pre_1970_time_converts_rather_than_exploding() {
+        // 1960-01-01. 1601 -> 1960 is 11_644_473_600 - 315_619_200
+        // seconds, and FILETIME counts 100ns ticks.
+        let expected = (FILETIME_EPOCH_OFFSET_SEC - 315_619_200) * FILETIME_TICKS_PER_SEC;
+        assert_eq!(unix_to_filetime(-315_619_200, 0), expected);
+        // Strictly before the epoch, and strictly after 1601.
+        assert!(unix_to_filetime(-315_619_200, 0) < unix_to_filetime(0, 0));
+        assert!(unix_to_filetime(-315_619_200, 0) > 0);
+    }
+
+    /// The oldest time ext4 can store: the floor of a signed 32-bit
+    /// second count, 1901-12-13.
+    #[test]
+    fn the_oldest_representable_filesystem_time_converts() {
+        let ft = unix_to_filetime(i64::from(i32::MIN), 0);
+        assert!(ft > 0, "1901 is after FILETIME's 1601 epoch");
+        assert!(ft < unix_to_filetime(0, 0));
+    }
+
+    /// Earlier than FILETIME itself can express. Clamped to 0, which is
+    /// what Windows uses for "not set" — not wrapped to a far-future
+    /// time, which is what an unchecked cast would produce.
+    #[test]
+    fn a_time_before_1601_clamps_to_zero() {
+        assert_eq!(unix_to_filetime(i64::MIN, 0), 0);
+        assert_eq!(
+            unix_to_filetime(-(FILETIME_EPOCH_OFFSET_SEC as i64) - 1, 0),
+            0
+        );
+    }
+
+    /// `Timestamp::to_filetime` used `self.secs as u64`, which turned a
+    /// negative second into an enormous positive one and saturated to a
+    /// far-future FILETIME. The cast is gone; this pins it.
+    #[test]
+    fn a_negative_timestamp_does_not_become_a_future_one() {
+        let past = Timestamp {
+            secs: -315_619_200,
+            nsec: 0,
+        };
+        let epoch = Timestamp { secs: 0, nsec: 0 };
+        assert!(
+            past.to_filetime() < epoch.to_filetime(),
+            "a 1960 timestamp must convert to a FILETIME before 1970's"
+        );
     }
 
     #[test]
