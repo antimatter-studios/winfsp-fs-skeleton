@@ -192,6 +192,31 @@ pub trait FsReader: Send + Sync + 'static {
     /// relative. Resolution is the caller's business.
     fn readlink(&self, node: &Self::Node) -> FsResult<String>;
 
+    /// Whether THIS MOUNT may be written to.
+    ///
+    /// Distinct from whether the reader implements [`FsWriter`], and
+    /// both questions have to be asked:
+    ///
+    /// - implementing `FsWriter` is a **capability** — this reader has
+    ///   a write path at all. It is a property of the type, fixed at
+    ///   compile time.
+    /// - `is_writable` is a **permission** — this particular mount was
+    ///   opened for writing. It is a property of the value, chosen by
+    ///   the `writable` argument to [`Self::mount`].
+    ///
+    /// A write-capable reader mounted read-only answers `false` here,
+    /// and the skeleton must refuse the mutating callbacks on that
+    /// basis. Keying only off the trait bound would make `writable =
+    /// false` decorative: the impl exists, so the calls would dispatch.
+    ///
+    /// Defaults to `false`, which is the safe answer for the read-only
+    /// drivers that never implement [`FsWriter`]. Any type that does
+    /// implement it must override this and report the mount's real
+    /// mode.
+    fn is_writable(&self) -> bool {
+        false
+    }
+
     /// Volume label, if the format records one.
     fn volume_label(&self) -> Option<String> {
         None
@@ -245,6 +270,27 @@ pub trait FsWriter: FsReader {
     fn flush(&self) -> FsResult<()>;
 }
 
+/// Check a mount's permission before using its capability.
+///
+/// The one place the two-question rule from [`FsReader::is_writable`]
+/// is enforced, so a mutating callback cannot forget to ask. Every
+/// WinFSP write path goes through this rather than calling an
+/// [`FsWriter`] method directly.
+///
+/// ```
+/// # use winfsp_fs_skeleton::reader::{writable, FsError, FsReader, FsWriter};
+/// # fn example<W: FsWriter>(fs: &W, node: &W::Node, data: &[u8]) -> Result<usize, FsError> {
+/// writable(fs)?.write_file(node, 0, data)
+/// # }
+/// ```
+pub fn writable<W: FsWriter>(fs: &W) -> FsResult<&W> {
+    if fs.is_writable() {
+        Ok(fs)
+    } else {
+        Err(FsError::ReadOnly)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -254,11 +300,11 @@ mod tests {
     /// the case the associated type exists for. If this stops
     /// compiling, the trait has grown an assumption about what a node
     /// is — the exact assumption that made the XFS port fail.
-    struct NodeCarriesBytes {
-        content: Vec<u8>,
+    pub(super) struct NodeCarriesBytes {
+        pub(super) content: Vec<u8>,
     }
 
-    struct BytesNode {
+    pub(super) struct BytesNode {
         offset: usize,
         len: usize,
         /// The part that matters: a reader is free to carry borrowed-
@@ -384,5 +430,124 @@ mod tests {
             "corrupt filesystem: bad magic"
         );
         assert_eq!(FsError::Other("boom".into()).to_string(), "boom");
+    }
+}
+
+#[cfg(test)]
+mod writability_tests {
+    use super::*;
+    use crate::translate::{NodeKind, Timestamp};
+
+    /// A reader that CAN write, mounted either way. The point of the
+    /// test is that the capability and the permission are separate:
+    /// this type implements `FsWriter` unconditionally, and whether a
+    /// given mount may use it is a runtime fact.
+    struct WriteCapable {
+        writable: bool,
+    }
+
+    impl FsReader for WriteCapable {
+        type Node = ();
+
+        fn mount(_device: Arc<dyn crate::device::BlockSource>, writable: bool) -> FsResult<Self> {
+            Ok(Self { writable })
+        }
+        fn is_writable(&self) -> bool {
+            self.writable
+        }
+        fn lookup(&self, _path: &str) -> FsResult<Self::Node> {
+            Ok(())
+        }
+        fn attr(&self, _node: &Self::Node) -> FileAttr {
+            FileAttr {
+                kind: NodeKind::File,
+                perms: 0o644,
+                size: 0,
+                inode: 1,
+                link_count: 1,
+                mtime: Timestamp { secs: 0, nsec: 0 },
+                atime: None,
+                ctime: None,
+                crtime: None,
+            }
+        }
+        fn read_file(&self, _n: &Self::Node, _o: u64, _b: &mut [u8]) -> FsResult<usize> {
+            Ok(0)
+        }
+        fn read_dir(&self, _n: &Self::Node) -> FsResult<Vec<DirEntry>> {
+            Ok(Vec::new())
+        }
+        fn readlink(&self, _n: &Self::Node) -> FsResult<String> {
+            Err(FsError::NotExpectedKind)
+        }
+        fn volume_size(&self) -> (u64, u64) {
+            (0, 0)
+        }
+    }
+
+    impl FsWriter for WriteCapable {
+        fn write_file(&self, _n: &Self::Node, _o: u64, data: &[u8]) -> FsResult<usize> {
+            Ok(data.len())
+        }
+        fn set_size(&self, _n: &Self::Node, _s: u64) -> FsResult<()> {
+            Ok(())
+        }
+        fn create(&self, _p: &str, _k: NodeKind, _perms: u16) -> FsResult<Self::Node> {
+            Ok(())
+        }
+        fn remove(&self, _p: &str) -> FsResult<()> {
+            Ok(())
+        }
+        fn rename(&self, _f: &str, _t: &str) -> FsResult<()> {
+            Ok(())
+        }
+        fn set_attr(
+            &self,
+            _n: &Self::Node,
+            _perms: Option<u16>,
+            _m: Option<Timestamp>,
+            _a: Option<Timestamp>,
+        ) -> FsResult<()> {
+            Ok(())
+        }
+        fn flush(&self) -> FsResult<()> {
+            Ok(())
+        }
+    }
+
+    /// The defect this guards against: a reader that implements
+    /// `FsWriter` would happily dispatch a write on a mount opened
+    /// read-only, because the impl exists. The trait bound answers
+    /// "can it write?", never "may this mount write?".
+    #[test]
+    fn a_write_capable_reader_mounted_read_only_is_refused() {
+        let fs = WriteCapable { writable: false };
+        assert!(matches!(
+            writable(&fs).map(|_| ()).unwrap_err(),
+            FsError::ReadOnly
+        ));
+        // The capability is still there — calling the method directly
+        // succeeds, which is exactly why the guard has to be the only
+        // route in.
+        assert_eq!(fs.write_file(&(), 0, b"xyz").unwrap(), 3);
+    }
+
+    #[test]
+    fn a_writable_mount_passes_the_guard() {
+        let fs = WriteCapable { writable: true };
+        assert_eq!(
+            writable(&fs).unwrap().write_file(&(), 0, b"xyz").unwrap(),
+            3
+        );
+    }
+
+    /// A reader with no write path answers `false` without having to
+    /// remember to. The default is the safe one.
+    #[test]
+    fn a_read_only_reader_defaults_to_not_writable() {
+        let fs = super::tests::NodeCarriesBytes {
+            content: b"x".to_vec(),
+        };
+        assert!(!fs.is_writable());
     }
 }
