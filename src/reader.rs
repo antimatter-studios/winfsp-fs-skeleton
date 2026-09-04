@@ -209,13 +209,20 @@ pub trait FsReader: Send + Sync + 'static {
     /// basis. Keying only off the trait bound would make `writable =
     /// false` decorative: the impl exists, so the calls would dispatch.
     ///
-    /// Defaults to `false`, which is the safe answer for the read-only
-    /// drivers that never implement [`FsWriter`]. Any type that does
-    /// implement it must override this and report the mount's real
-    /// mode.
-    fn is_writable(&self) -> bool {
-        false
-    }
+    /// **No default, deliberately.** Every reader has to answer, and
+    /// both possible defaults fail silently in opposite directions:
+    ///
+    /// - defaulting to `false` lets an [`FsWriter`] implementor forget
+    ///   to override it and compile, whereupon every mutating callback
+    ///   is refused on a volume the user mounted read-write.
+    /// - defaulting to `true` would do the reverse, and worse.
+    ///
+    /// Rust cannot require an implementor to override a defaulted
+    /// method, so the only way to make the question unskippable is not
+    /// to answer it here. The cost is one three-line method on the
+    /// read-only drivers; the alternative is a mount whose mode is
+    /// wrong and says nothing.
+    fn is_writable(&self) -> bool;
 
     /// Volume label, if the format records one.
     fn volume_label(&self) -> Option<String> {
@@ -319,6 +326,12 @@ mod tests {
             Ok(Self {
                 content: b"hello world".to_vec(),
             })
+        }
+
+        /// Read-only: this reader has no write path at all, and says
+        /// so rather than inheriting an assumption.
+        fn is_writable(&self) -> bool {
+            false
         }
 
         fn lookup(&self, path: &str) -> FsResult<Self::Node> {
