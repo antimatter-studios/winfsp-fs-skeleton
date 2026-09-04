@@ -69,6 +69,10 @@
 pub mod device;
 pub mod partition;
 pub mod probe;
+/// What a driver provides so the skeleton need not know which
+/// filesystem it hosts. See the module docs for why this is separate
+/// from [`FsBackend`].
+pub mod reader;
 pub mod translate;
 
 pub mod watch;
