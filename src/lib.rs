@@ -69,6 +69,7 @@
 pub mod device;
 pub mod partition;
 pub mod probe;
+pub mod translate;
 
 pub mod watch;
 
