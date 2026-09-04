@@ -6,6 +6,24 @@ patch never does.
 
 ## [Unreleased]
 
+## [0.2.1] — 2026-09-04
+
+Patch rather than minor: purely additive, so nothing that compiled
+against 0.2.0 stops compiling.
+
+### Added
+
+- **`filetime_to_unix`** — the inverse of `unix_to_filetime`, which the
+  drivers needed and had been writing themselves. Their copies were wrong
+  in both directions: they returned `None` for any FILETIME predating the
+  Unix epoch, which the caller reads as WinFSP's "leave unchanged"
+  sentinel and so silently discards a time the user asked for, and they
+  clamped anything past 2106 because they returned `u32` seconds.
+
+  Here `None` means only the zero sentinel, and the return type is the
+  signed `Timestamp`, so a pre-1970 time converts rather than vanishing.
+
+
 ## [0.2.0] — 2026-09-04
 
 Two new public modules. Together they are what a driver needs in order to stop
@@ -114,6 +132,7 @@ Note that `Cargo.toml` was never bumped for this release and still read
   alignment, and drive-letter selection — the parts of a WinFSP driver that
   have nothing to do with which filesystem is being hosted.
 
-[Unreleased]: https://github.com/antimatter-studios/winfsp-fs-skeleton/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/antimatter-studios/winfsp-fs-skeleton/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/antimatter-studios/winfsp-fs-skeleton/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/antimatter-studios/winfsp-fs-skeleton/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/antimatter-studios/winfsp-fs-skeleton/releases/tag/v0.1.1
