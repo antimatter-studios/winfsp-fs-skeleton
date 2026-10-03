@@ -260,6 +260,81 @@ mod tests {
         std::fs::remove_file(&path).ok();
     }
 
+    /// Write one 16-byte MBR/EBR table slot into `sector` (a 512-byte
+    /// sector image) and stamp the 0x55AA boot signature.
+    fn put_slot(sector: &mut [u8], slot: usize, kind: u8, lba: u32, len: u32) {
+        sector[510] = 0x55;
+        sector[511] = 0xAA;
+        let off = MBR_PART_OFF + slot * 16;
+        sector[off + 4] = kind;
+        sector[off + 8..off + 12].copy_from_slice(&lba.to_le_bytes());
+        sector[off + 12..off + 16].copy_from_slice(&len.to_le_bytes());
+    }
+
+    fn sector_mut(img: &mut [u8], lba: usize) -> &mut [u8] {
+        &mut img[lba * 512..(lba + 1) * 512]
+    }
+
+    #[test]
+    fn parses_logical_partitions_in_extended_chain() {
+        // The layout from ext4-win-driver#11, shrunk: a primary, then an
+        // extended partition holding ext4 + swap + ext4 as logicals.
+        //
+        //   LBA   0: MBR  [0x07 @2 len 90] [0x05 @100 len 300]
+        //   LBA 100: EBR  [0x83 @+1 len 50] [0x05 @ext+100 len 100]
+        //   LBA 200: EBR  [0x82 @+1 len 50] [0x05 @ext+200 len 100]
+        //   LBA 300: EBR  [0x83 @+1 len 50] (end of chain)
+        //
+        // A logical's start is relative to its own EBR; the link to the
+        // next EBR is relative to the start of the extended partition.
+        let mut img = vec![0u8; 512 * 352];
+        put_slot(sector_mut(&mut img, 0), 0, 0x07, 2, 90);
+        put_slot(sector_mut(&mut img, 0), 1, 0x05, 100, 300);
+        put_slot(sector_mut(&mut img, 100), 0, 0x83, 1, 50);
+        put_slot(sector_mut(&mut img, 100), 1, 0x05, 100, 100);
+        put_slot(sector_mut(&mut img, 200), 0, 0x82, 1, 50);
+        put_slot(sector_mut(&mut img, 200), 1, 0x05, 200, 100);
+        put_slot(sector_mut(&mut img, 300), 0, 0x83, 1, 50);
+
+        let path = tmp_path("mbr_logical");
+        write_image(&path, &img);
+        let parts = list(&path).unwrap();
+        std::fs::remove_file(&path).ok();
+
+        let got: Vec<(u64, u64, &str)> = parts
+            .iter()
+            .map(|p| (p.start_lba, p.num_sectors, p.kind.as_str()))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                (2, 90, "MBR:0x07"),
+                (101, 50, "MBR:0x83"),
+                (201, 50, "MBR:0x82"),
+                (301, 50, "MBR:0x83"),
+            ],
+            "the extended container is replaced by the logicals it holds"
+        );
+    }
+
+    #[test]
+    fn ebr_chain_that_loops_back_terminates() {
+        // A corrupt chain whose link points at its own EBR must not spin.
+        let mut img = vec![0u8; 512 * 160];
+        put_slot(sector_mut(&mut img, 0), 0, 0x0F, 100, 60);
+        put_slot(sector_mut(&mut img, 100), 0, 0x83, 1, 50);
+        put_slot(sector_mut(&mut img, 100), 1, 0x05, 0, 60);
+
+        let path = tmp_path("mbr_ebr_loop");
+        write_image(&path, &img);
+        let parts = list(&path).unwrap();
+        std::fs::remove_file(&path).ok();
+
+        assert_eq!(parts.len(), 1, "got {parts:?}");
+        assert_eq!(parts[0].start_lba, 101);
+        assert_eq!(parts[0].kind, "MBR:0x83");
+    }
+
     #[test]
     fn parses_gpt() {
         // Layout:
