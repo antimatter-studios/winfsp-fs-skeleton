@@ -6,7 +6,23 @@ patch never does.
 
 ## [Unreleased]
 
+## [0.2.2] — 2026-10-04
+
+Patch rather than minor: the new `scan` module is additive, so nothing that
+compiled against 0.2.1 stops compiling.
+
 ### Fixed
+
+- **Disks attached before the watcher starts are mounted.** The service and
+  the foreground watcher reacted only to `WM_DEVICECHANGE` arrivals, so a
+  disk present at boot never produced one and stayed unmounted until it was
+  replugged. Both now walk the present `GUID_DEVINTERFACE_DISK` interfaces
+  when they start and probe each disk as if it had just arrived. The service
+  also rescans on logon or console connect, because at boot there is no
+  console session to mount into. A rescan skips disks that already hold a
+  mount, and removal matches disk paths case-blind, because the set-up API
+  lowercases the interface path the arrival notification spells in mixed
+  case.
 
 - **Logical partitions are listed.** `partition::list` read only the four
   primary MBR slots, so an extended partition (0x05, 0x0F, 0x85) came back
