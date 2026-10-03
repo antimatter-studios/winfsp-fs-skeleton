@@ -6,6 +6,17 @@ patch never does.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Logical partitions are listed.** `partition::list` read only the four
+  primary MBR slots, so an extended partition (0x05, 0x0F, 0x85) came back
+  as one opaque entry and every logical partition inside it was invisible
+  — an ext4 root in a logical, the usual dual-boot BIOS layout, was never
+  found. The EBR chain is now walked, the logicals follow the primaries in
+  chain order, and the extended container itself is no longer listed. A
+  corrupt chain (loop, out-of-range link, bad signature) ends the walk
+  rather than the listing.
+
 ## [0.2.1] — 2026-09-04
 
 Patch rather than minor: purely additive, so nothing that compiled

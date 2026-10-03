@@ -52,7 +52,75 @@ pub fn list_from_source(src: &dyn BlockSource) -> Result<Vec<Partition>> {
     if has_gpt_protective(&mbr) {
         parse_gpt(src).context("parsing GPT")
     } else {
-        Ok(parse_mbr(&mbr))
+        let mut out = Vec::new();
+        let mut extended = Vec::new();
+        for p in parse_mbr(&mbr) {
+            if is_extended(&p.kind) {
+                extended.push(p);
+            } else {
+                out.push(p);
+            }
+        }
+        for ext in &extended {
+            walk_ebr_chain(src, ext, &mut out);
+        }
+        Ok(out)
+    }
+}
+
+/// MBR type bytes that mark an extended partition: CHS (0x05), LBA (0x0F)
+/// and Linux's own (0x85). They hold an EBR chain, not a filesystem.
+const EXTENDED_KINDS: [&str; 3] = ["MBR:0x05", "MBR:0x0f", "MBR:0x85"];
+
+/// Upper bound on EBRs followed in one chain, so a corrupt chain cannot
+/// keep the walk going. Far above any real disk's logical count.
+const MAX_LOGICALS: usize = 128;
+
+fn is_extended(kind: &str) -> bool {
+    EXTENDED_KINDS.contains(&kind)
+}
+
+/// Follow the EBR chain inside the extended partition `ext`, appending
+/// each logical partition to `out`.
+///
+/// In every EBR, slot 0 is the logical partition, with its start relative
+/// to that EBR's own sector; slot 1 links to the next EBR, with its start
+/// relative to the first sector of the extended partition. The walk stops
+/// at the end of the chain, and also — without failing the listing, so
+/// the primaries still come through — at an unreadable EBR, a missing
+/// boot signature, a link outside the extended partition, an EBR already
+/// visited, or after [`MAX_LOGICALS`] hops.
+fn walk_ebr_chain(src: &dyn BlockSource, ext: &Partition, out: &mut Vec<Partition>) {
+    let ext_end = ext.start_lba + ext.num_sectors;
+    let mut visited = Vec::new();
+    let mut ebr_lba = ext.start_lba;
+    while visited.len() < MAX_LOGICALS && !visited.contains(&ebr_lba) {
+        visited.push(ebr_lba);
+        let mut ebr = [0u8; 512];
+        if src.read_at(ebr_lba * SECTOR, &mut ebr).is_err()
+            || ebr[MBR_SIG_OFF] != 0x55
+            || ebr[MBR_SIG_OFF + 1] != 0xAA
+        {
+            return;
+        }
+        let slots = parse_mbr(&ebr);
+        let mut next = None;
+        for slot in slots.into_iter().take(2) {
+            if is_extended(&slot.kind) {
+                if next.is_none() {
+                    next = Some(ext.start_lba + slot.start_lba);
+                }
+            } else if slot.start_lba != 0 {
+                out.push(Partition {
+                    start_lba: ebr_lba + slot.start_lba,
+                    ..slot
+                });
+            }
+        }
+        match next {
+            Some(lba) if lba > ext.start_lba && lba < ext_end => ebr_lba = lba,
+            _ => return,
+        }
     }
 }
 
