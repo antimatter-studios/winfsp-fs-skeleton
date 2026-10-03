@@ -85,7 +85,7 @@ mod imp {
 
     use windows_service::service::{
         ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus,
-        ServiceType,
+        ServiceType, SessionChangeReason,
     };
     use windows_service::service_control_handler::{
         self, ServiceControlHandlerResult, ServiceStatusHandle,
@@ -100,10 +100,17 @@ mod imp {
         SetWindowLongPtrW, TranslateMessage, UnregisterClassW, UnregisterDeviceNotification,
         DBT_DEVICEARRIVAL, DBT_DEVICEREMOVECOMPLETE, DBT_DEVTYP_DEVICEINTERFACE,
         DEVICE_NOTIFY_WINDOW_HANDLE, DEV_BROADCAST_DEVICEINTERFACE_W, GWLP_USERDATA, HWND_MESSAGE,
-        MSG, WM_DEVICECHANGE, WM_QUIT, WNDCLASSW,
+        MSG, WM_APP, WM_DEVICECHANGE, WM_QUIT, WNDCLASSW,
     };
 
     use crate::probe;
+    use crate::scan::{self, PresentDisks};
+
+    /// Thread message asking the pump to rescan the present disks.
+    /// Posted by the SCM control handler, which runs on another
+    /// thread, so the scan itself stays on the pump thread alongside
+    /// the arrival handler.
+    const WM_RESCAN: u32 = WM_APP + 1;
 
     // ---------------------------------------------------------------------
     // Backend-supplied data, set once by the public `run<B>()`.
@@ -198,6 +205,21 @@ mod imp {
                     }
                     ServiceControlHandlerResult::NoError
                 }
+                // At boot the service starts before anyone logs on,
+                // so the start-up scan finds the disks but has no
+                // console session to mount them into. The logon (or a
+                // console reconnect) is the moment to try again.
+                ServiceControl::SessionChange(param) => {
+                    if matches!(
+                        param.reason,
+                        SessionChangeReason::SessionLogon | SessionChangeReason::ConsoleConnect
+                    ) {
+                        unsafe {
+                            PostThreadMessageW(main_thread, WM_RESCAN, 0, 0);
+                        }
+                    }
+                    ServiceControlHandlerResult::NoError
+                }
                 ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
                 _ => ServiceControlHandlerResult::NotImplemented,
             }
@@ -223,12 +245,18 @@ mod imp {
         handle.set_service_status(ServiceStatus {
             service_type: ServiceType::OWN_PROCESS,
             current_state: ServiceState::Running,
-            controls_accepted: ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN,
+            controls_accepted: ServiceControlAccept::STOP
+                | ServiceControlAccept::SHUTDOWN
+                | ServiceControlAccept::SESSION_CHANGE,
             exit_code: ServiceExitCode::Win32(0),
             checkpoint: 0,
             wait_hint: Duration::default(),
             process_id: None,
         })?;
+
+        // Disks attached before the notification was registered --
+        // all of them, at boot -- never produce an arrival.
+        rescan(state());
 
         unsafe { pump.run() };
         drop(pump);
@@ -355,6 +383,10 @@ mod imp {
                     );
                     break;
                 }
+                if msg.hwnd.is_null() && msg.message == WM_RESCAN {
+                    rescan(state());
+                    continue;
+                }
                 TranslateMessage(&msg);
                 DispatchMessageW(&msg);
             }
@@ -413,6 +445,23 @@ mod imp {
         DefWindowProcW(hwnd, msg, wparam, lparam)
     }
 
+    /// Probe every present disk that holds no mount yet, exactly as if
+    /// each had just arrived.
+    fn rescan(state: &Mutex<State>) {
+        let tracked: Vec<String> = match state.lock() {
+            Ok(st) if !st.shutting_down => st.mounts.keys().map(|(d, _)| d.clone()).collect(),
+            _ => return,
+        };
+        match scan::disks_to_probe(&PresentDisks, &tracked) {
+            Ok(disks) => {
+                for disk in disks {
+                    handle_arrival(state, &disk);
+                }
+            }
+            Err(e) => eprintln!("[{}] scanning present disks: {e:#}", fs_name()),
+        }
+    }
+
     fn handle_arrival(state: &Mutex<State>, disk_path: &str) {
         if state.lock().map(|s| s.shutting_down).unwrap_or(true) {
             return;
@@ -465,7 +514,7 @@ mod imp {
             let keys: Vec<(String, usize)> = st
                 .mounts
                 .keys()
-                .filter(|(d, _)| d == disk_path)
+                .filter(|(d, _)| scan::same_device(d, disk_path))
                 .cloned()
                 .collect();
             keys.into_iter()
