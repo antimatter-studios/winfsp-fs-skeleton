@@ -73,6 +73,7 @@ pub mod probe;
 /// filesystem it hosts. See the module docs for why this is separate
 /// from [`FsBackend`].
 pub mod reader;
+pub mod scan;
 pub mod translate;
 
 pub mod watch;

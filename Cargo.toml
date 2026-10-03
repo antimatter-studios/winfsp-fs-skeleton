@@ -32,6 +32,9 @@ tempfile = "3"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
+    # SetupDi*: lists the disks already present at start-up, which
+    # never produce an arrival notification.
+    "Win32_Devices_DeviceAndDriverInstallation",
     "Win32_Foundation",
     # Win32_Graphics_Gdi: gates WNDCLASSW + RegisterClassW even though
     # we don't actually do any GDI drawing -- those types are

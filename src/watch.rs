@@ -85,6 +85,7 @@ mod imp {
     };
 
     use crate::probe;
+    use crate::scan::{self, PresentDisks};
     use crate::FsBackend;
 
     /// Window class name. Wide-encoded inline to avoid pulling in
@@ -237,6 +238,10 @@ mod imp {
             B::FS_NAME
         );
 
+        // Disks attached before the notification was registered never
+        // produce an arrival, so probe the ones already present.
+        rescan::<B>(state::<B>());
+
         let mut msg: MSG = std::mem::zeroed();
         loop {
             let r = GetMessageW(&mut msg, ptr::null_mut(), 0, 0);
@@ -307,6 +312,23 @@ mod imp {
         DefWindowProcW(hwnd, msg, wparam, lparam)
     }
 
+    /// Probe every present disk that holds no mount yet, exactly as if
+    /// each had just arrived.
+    fn rescan<B: FsBackend>(state: &Mutex<State>) {
+        let tracked: Vec<String> = match state.lock() {
+            Ok(st) if !st.shutting_down => st.mounts.keys().map(|(d, _)| d.clone()).collect(),
+            _ => return,
+        };
+        match scan::disks_to_probe(&PresentDisks, &tracked) {
+            Ok(disks) => {
+                for disk in disks {
+                    handle_arrival::<B>(state, &disk);
+                }
+            }
+            Err(e) => eprintln!("[{}] scanning present disks: {e:#}", B::FS_NAME),
+        }
+    }
+
     /// `DBT_DEVICEARRIVAL` for a disk-class device interface: open
     /// the disk, walk its partition table, probe each partition via
     /// `B::detect`, spawn `<exe> mount` for each hit.
@@ -368,7 +390,7 @@ mod imp {
         let keys: Vec<(String, usize)> = st
             .mounts
             .keys()
-            .filter(|(d, _)| d == disk_path)
+            .filter(|(d, _)| scan::same_device(d, disk_path))
             .cloned()
             .collect();
         for key in keys {
