@@ -6,6 +6,22 @@ patch never does.
 
 ## [Unreleased]
 
+### Added
+
+- **`FsBackend::PROBE_BYTES` says how far into a partition `detect` needs to
+  see.** It defaults to 4096, so every existing backend probes exactly as
+  before; a filesystem whose magic is further in, such as Btrfs at 64 KiB +
+  0x40, declares its own. `probe::detect_at` is the one probe path the
+  watcher and the service share, and it is tested on every host.
+
+### Fixed
+
+- **The probe reads as far into a partition as the backend asks.** Both
+  probe paths read a fixed 4 KiB, so a filesystem whose magic is past it
+  was never detected and its disks were silently never auto-mounted. They
+  now read `PROBE_BYTES`, rounded up to whole 4 KiB sectors so a raw
+  512-byte or 4Kn device accepts the read.
+
 ## [0.2.2] — 2026-10-04
 
 Patch rather than minor: the new `scan` module is additive, so nothing that

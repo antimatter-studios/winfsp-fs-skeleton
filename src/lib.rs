@@ -117,10 +117,22 @@ pub trait FsBackend {
     /// registration uses this.
     const FILE_EXTENSION: &'static str;
 
+    /// How many bytes from the start of a partition [`detect`](Self::detect)
+    /// needs to see. The probe reads at least this many, rounded up to
+    /// whole 4 KiB sectors, so `detect` is handed a slice at least this
+    /// long.
+    ///
+    /// The default, 4096, covers a magic within the first 4 KiB: ext4
+    /// (1024 + 0x38), XFS (0), EROFS (1024). A filesystem whose magic is
+    /// further in declares its own: Btrfs's primary superblock is at
+    /// 64 KiB and its magic at 0x40 within it, so it needs `0x1_0048`.
+    const PROBE_BYTES: usize = 4096;
+
     /// Probe a raw byte slice for this filesystem's superblock magic.
-    /// The skeleton calls this with the first ~4 KiB of every newly-
-    /// arrived partition (read at the partition's on-disk offset,
-    /// sector-aligned). Implementations should be quick + total --
+    /// The skeleton calls this with the first
+    /// [`PROBE_BYTES`](Self::PROBE_BYTES) of every newly-arrived
+    /// partition, rounded up to whole sectors (see
+    /// [`probe::detect_at`]). Implementations should be quick + total --
     /// don't allocate, don't fail; return `false` for "doesn't look
     /// like our FS."
     fn detect(bytes: &[u8]) -> bool;

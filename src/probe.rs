@@ -7,11 +7,50 @@
 //!   subscriptions.
 //! - [`device_interface_name`] -- pull the device path string out of
 //!   a `DEV_BROADCAST_DEVICEINTERFACE_W` lparam payload.
+//! - [`detect_at`] -- read a partition's probe window and hand it to
+//!   the consumer's `FsBackend::detect`. Both the foreground watcher
+//!   and the service probe through it, and it is host-independent, so
+//!   it is tested on every host.
 //!
 //! Detection of a specific filesystem's superblock magic lives in the
 //! consumer's `FsBackend::detect` -- not here.
 
 #![allow(dead_code)]
+
+use crate::device::BlockSource;
+use crate::FsBackend;
+
+/// The probe window is read in whole units of this many bytes: a
+/// multiple of both 512-byte and 4Kn sector sizes, so a raw device
+/// accepts the read.
+pub const PROBE_SECTOR: usize = 4096;
+
+/// How many bytes the probe reads for a backend that asks for `wanted`:
+/// `wanted` rounded up to whole [`PROBE_SECTOR`]s, and never less than
+/// one.
+pub const fn probe_len(wanted: usize) -> usize {
+    if wanted <= PROBE_SECTOR {
+        PROBE_SECTOR
+    } else {
+        wanted.div_ceil(PROBE_SECTOR) * PROBE_SECTOR
+    }
+}
+
+/// Read the probe window of the partition that starts `offset` bytes
+/// into `src` -- `B::PROBE_BYTES`, rounded up by [`probe_len`] -- and
+/// ask `B::detect` whether it holds `B`'s filesystem.
+///
+/// A read that fails -- the window runs past the end of the device, or
+/// the device refuses it -- is "not ours", not an error: the watcher
+/// probes every partition it sees, and most of them belong to another
+/// filesystem.
+pub fn detect_at<B: FsBackend, S: BlockSource + ?Sized>(src: &S, offset: u64) -> bool {
+    let mut buf = vec![0u8; probe_len(B::PROBE_BYTES)];
+    if src.read_at(offset, &mut buf).is_err() {
+        return false;
+    }
+    B::detect(&buf)
+}
 
 /// Pick the lowest free drive letter in `E..=Z` (skipping ones already
 /// in use according to `GetLogicalDrives`). Returns `None` if none are
@@ -93,6 +132,143 @@ pub unsafe fn device_interface_name(
     };
     let s = OsString::from_wide(trimmed).into_string().ok()?;
     Some(s)
+}
+
+#[cfg(test)]
+mod window_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// A disk image in memory. A read past its end fails, as a
+    /// device's does.
+    struct Mem(Vec<u8>);
+
+    impl BlockSource for Mem {
+        fn read_at(&self, offset: u64, buf: &mut [u8]) -> std::io::Result<()> {
+            let start = usize::try_from(offset).map_err(|_| std::io::ErrorKind::InvalidInput)?;
+            let end = start
+                .checked_add(buf.len())
+                .filter(|&end| end <= self.0.len())
+                .ok_or(std::io::ErrorKind::UnexpectedEof)?;
+            buf.copy_from_slice(&self.0[start..end]);
+            Ok(())
+        }
+
+        fn size(&self) -> u64 {
+            self.0.len() as u64
+        }
+    }
+
+    /// Where the partition under test starts on the disk: past the
+    /// first MiB, as a partitioning tool puts it, so a probe that reads
+    /// from the start of the disk rather than of the partition misses.
+    const PART: usize = 1 << 20;
+
+    /// Btrfs's magic: the primary superblock is at 64 KiB, and the
+    /// magic at 0x40 within it.
+    const DEEP_MAGIC_AT: usize = 0x1_0040;
+    const DEEP_MAGIC: &[u8] = b"_BHRfS_M";
+
+    /// The length of the slice `Deep::detect` was last handed.
+    static DEEP_SAW: AtomicUsize = AtomicUsize::new(0);
+
+    /// A backend whose magic is where Btrfs's is.
+    struct Deep;
+
+    impl FsBackend for Deep {
+        const FS_NAME: &'static str = "deep";
+        const SERVICE_NAME: &'static str = "DeepWatcher";
+        const LAUNCHER_SERVICE_CLASS: &'static str = "deep-mount";
+        const FILE_EXTENSION: &'static str = "img";
+        const PROBE_BYTES: usize = DEEP_MAGIC_AT + DEEP_MAGIC.len();
+
+        fn detect(bytes: &[u8]) -> bool {
+            DEEP_SAW.store(bytes.len(), Ordering::SeqCst);
+            bytes.get(DEEP_MAGIC_AT..DEEP_MAGIC_AT + DEEP_MAGIC.len()) == Some(DEEP_MAGIC)
+        }
+    }
+
+    /// The length of the slice `Shallow::detect` was last handed.
+    static SHALLOW_SAW: AtomicUsize = AtomicUsize::new(0);
+
+    /// A backend that leaves `PROBE_BYTES` at its default, with its
+    /// magic where ext4's is.
+    struct Shallow;
+
+    impl FsBackend for Shallow {
+        const FS_NAME: &'static str = "shallow";
+        const SERVICE_NAME: &'static str = "ShallowWatcher";
+        const LAUNCHER_SERVICE_CLASS: &'static str = "shallow-mount";
+        const FILE_EXTENSION: &'static str = "img";
+
+        fn detect(bytes: &[u8]) -> bool {
+            SHALLOW_SAW.store(bytes.len(), Ordering::SeqCst);
+            bytes.get(1024 + 0x38..1024 + 0x3A) == Some(&[0x53, 0xEF][..])
+        }
+    }
+
+    /// A disk of `PART` bytes of nothing, then a partition of
+    /// `part_len` bytes, with `magic` written `at` bytes into it.
+    fn disk(part_len: usize, at: usize, magic: &[u8]) -> Mem {
+        let mut bytes = vec![0u8; PART + part_len];
+        bytes[PART + at..PART + at + magic.len()].copy_from_slice(magic);
+        Mem(bytes)
+    }
+
+    #[test]
+    fn a_magic_at_64_kib_is_detected_through_the_probe() {
+        let img = disk(4 << 20, DEEP_MAGIC_AT, DEEP_MAGIC);
+        assert!(
+            detect_at::<Deep, _>(&img, PART as u64),
+            "a backend whose magic is at 0x1_0040 was not detected: detect was handed {} bytes",
+            DEEP_SAW.load(Ordering::SeqCst)
+        );
+    }
+
+    #[test]
+    fn the_window_is_what_the_backend_asks_for_in_whole_sectors() {
+        let img = disk(4 << 20, 0, b"");
+        detect_at::<Deep, _>(&img, PART as u64);
+        let saw = DEEP_SAW.load(Ordering::SeqCst);
+        assert!(
+            saw >= Deep::PROBE_BYTES,
+            "detect was handed {saw} bytes, the backend asks for {}",
+            Deep::PROBE_BYTES
+        );
+        assert_eq!(
+            saw % PROBE_SECTOR,
+            0,
+            "a {saw}-byte window is not whole sectors"
+        );
+    }
+
+    #[test]
+    fn a_backend_that_asks_for_the_default_gets_4096_bytes() {
+        let img = disk(4 << 20, 1024 + 0x38, &[0x53, 0xEF]);
+        assert!(detect_at::<Shallow, _>(&img, PART as u64));
+        assert_eq!(SHALLOW_SAW.load(Ordering::SeqCst), 4096);
+    }
+
+    #[test]
+    fn the_probe_length_is_whole_sectors_and_never_less_than_one() {
+        assert_eq!(probe_len(0), PROBE_SECTOR);
+        assert_eq!(probe_len(1), PROBE_SECTOR);
+        assert_eq!(probe_len(PROBE_SECTOR), PROBE_SECTOR);
+        assert_eq!(probe_len(PROBE_SECTOR + 1), 2 * PROBE_SECTOR);
+        assert_eq!(probe_len(0x1_0048), 0x1_1000);
+    }
+
+    #[test]
+    fn a_partition_without_the_magic_is_not_detected() {
+        let img = disk(4 << 20, 0, b"");
+        assert!(!detect_at::<Deep, _>(&img, PART as u64));
+    }
+
+    #[test]
+    fn a_window_past_the_end_of_the_device_is_not_ours_rather_than_an_error() {
+        let img = disk(2048, 0, b"");
+        assert!(!detect_at::<Shallow, _>(&img, PART as u64));
+    }
 }
 
 #[cfg(all(test, target_os = "windows"))]

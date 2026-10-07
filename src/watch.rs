@@ -407,19 +407,14 @@ mod imp {
         }
     }
 
-    /// Read a small sector-aligned window at `offset` from
-    /// `disk_path` and run `B::detect` on it. 4 KiB covers both
-    /// 512-byte and 4Kn devices and is large enough for any
-    /// superblock magic any FS we support uses.
+    /// Open `disk_path` and probe the partition at `offset` for `B`
+    /// through [`probe::detect_at`], which reads the window `B` asks
+    /// for.
     fn probe_at_offset<B: FsBackend>(disk_path: &str, offset: u64) -> Result<bool> {
-        use crate::device::{BlockSource, FileSource};
+        use crate::device::FileSource;
         let src = FileSource::open(Path::new(disk_path))
             .with_context(|| format!("opening {disk_path} for probe"))?;
-        let mut buf = vec![0u8; 4096];
-        if src.read_at(offset, &mut buf).is_err() {
-            return Ok(false);
-        }
-        Ok(B::detect(&buf))
+        Ok(probe::detect_at::<B, _>(&src, offset))
     }
 
     /// Pick a free drive letter and spawn `<current_exe> mount
