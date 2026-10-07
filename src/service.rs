@@ -33,8 +33,9 @@
 //! `define_windows_service!` builds a fixed-signature FFI shim, so we
 //! can't carry the consumer's `B: FsBackend` type parameter through
 //! it. Instead, [`run`] -- which IS generic -- writes B's constants
-//! and `B::detect` function pointer into module-level `OnceLock`
-//! statics before calling `service_dispatcher::start`. Everything
+//! and its probe (`probe::detect_at::<B, _>`, which reads the window
+//! `B::PROBE_BYTES` asks for and calls `B::detect`) into module-level
+//! `OnceLock` statics before calling `service_dispatcher::start`. Everything
 //! downstream (the FFI, `service_main`, the wndproc) reads from
 //! those statics. A single binary runs only one backend at a time,
 //! so the global state is fine.
@@ -54,7 +55,9 @@ pub fn run<B: FsBackend>() -> Result<()> {
     imp::LAUNCHER_SERVICE_CLASS
         .set(B::LAUNCHER_SERVICE_CLASS)
         .ok();
-    imp::DETECT.set(B::detect as fn(&[u8]) -> bool).ok();
+    imp::PROBE
+        .set(crate::probe::detect_at::<B, crate::device::FileSource> as imp::ProbeFn)
+        .ok();
     imp::run()
 }
 
@@ -119,7 +122,10 @@ mod imp {
     pub(super) static FS_NAME: OnceLock<&'static str> = OnceLock::new();
     pub(super) static SERVICE_NAME: OnceLock<&'static str> = OnceLock::new();
     pub(super) static LAUNCHER_SERVICE_CLASS: OnceLock<&'static str> = OnceLock::new();
-    pub(super) static DETECT: OnceLock<fn(&[u8]) -> bool> = OnceLock::new();
+    /// `probe::detect_at` for the consumer's backend: reads the probe
+    /// window the backend asks for and runs its `detect` on it.
+    pub(super) type ProbeFn = fn(&crate::device::FileSource, u64) -> bool;
+    pub(super) static PROBE: OnceLock<ProbeFn> = OnceLock::new();
 
     fn fs_name() -> &'static str {
         FS_NAME.get().copied().unwrap_or("fs")
@@ -129,12 +135,6 @@ mod imp {
     }
     fn launcher_class() -> &'static str {
         LAUNCHER_SERVICE_CLASS.get().copied().unwrap_or("fs-mount")
-    }
-    fn detect(bytes: &[u8]) -> bool {
-        match DETECT.get() {
-            Some(f) => f(bytes),
-            None => false,
-        }
     }
 
     // ---------------------------------------------------------------------
@@ -544,14 +544,10 @@ mod imp {
     }
 
     fn probe_at_offset(disk_path: &str, offset: u64) -> Result<bool> {
-        use crate::device::{BlockSource, FileSource};
+        use crate::device::FileSource;
         let src = FileSource::open(Path::new(disk_path))
             .with_context(|| format!("opening {disk_path} for probe"))?;
-        let mut buf = vec![0u8; 4096];
-        if src.read_at(offset, &mut buf).is_err() {
-            return Ok(false);
-        }
-        Ok(detect(&buf))
+        Ok(PROBE.get().is_some_and(|probe| probe(&src, offset)))
     }
 
     fn spawn_partition_mount(state: &Mutex<State>, disk_path: &str, n: usize) {
