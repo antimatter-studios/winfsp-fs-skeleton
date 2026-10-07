@@ -7,7 +7,7 @@ PublisherUrl: https://github.com/antimatter-studios
 PublisherSupportUrl: https://github.com/antimatter-studios/ext4-win-driver/issues
 PackageName: ext4-win-driver
 PackageUrl: https://github.com/antimatter-studios/ext4-win-driver
-License: GPL-3.0-only
+License: GPL-3.0-or-later
 LicenseUrl: https://www.gnu.org/licenses/gpl-3.0.html
 ShortDescription: Browse and auto-mount ext4 disks on Windows via WinFsp.
 Description: |
