@@ -122,6 +122,10 @@ impl FsBackend for MyFs {
     const SERVICE_NAME: &'static str = "MyFsWatcher";
     const LAUNCHER_SERVICE_CLASS: &'static str = "myfs-mount";
     const FILE_EXTENSION: &'static str = "img";
+    // Optional: how far into a partition `detect` needs to see. The
+    // default, 4096, covers a magic in the first 4 KiB; Btrfs, whose
+    // magic is at 64 KiB + 0x40, would declare 0x1_0048.
+    // const PROBE_BYTES: usize = 4096;
 
     fn detect(bytes: &[u8]) -> bool {
         // Replace with your FS's superblock magic check. ext4 lives at
@@ -211,6 +215,10 @@ Two paths fire on `DBT_DEVICEARRIVAL`:
    then probes each partition at `start_lba * 512` (sector size is
    fixed at 512) and spawns `mount --part N` for hits, with `N`
    1-indexed in MBR slot order.
+
+Either way the probe reads the first `PROBE_BYTES` of the partition
+(4 KiB unless the backend declares more), rounded up to whole 4 KiB
+sectors, and hands them to `detect`.
 
 So a partitioned smoke-test needs three things on disk: the `0x55
 0xAA` signature, at least one valid MBR entry, and the magic placed

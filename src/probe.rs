@@ -25,15 +25,27 @@ use crate::FsBackend;
 /// accepts the read.
 pub const PROBE_SECTOR: usize = 4096;
 
+/// How many bytes the probe reads for a backend that asks for `wanted`:
+/// `wanted` rounded up to whole [`PROBE_SECTOR`]s, and never less than
+/// one.
+pub const fn probe_len(wanted: usize) -> usize {
+    if wanted <= PROBE_SECTOR {
+        PROBE_SECTOR
+    } else {
+        wanted.div_ceil(PROBE_SECTOR) * PROBE_SECTOR
+    }
+}
+
 /// Read the probe window of the partition that starts `offset` bytes
-/// into `src`, and ask `B::detect` whether it holds `B`'s filesystem.
+/// into `src` -- `B::PROBE_BYTES`, rounded up by [`probe_len`] -- and
+/// ask `B::detect` whether it holds `B`'s filesystem.
 ///
 /// A read that fails -- the window runs past the end of the device, or
 /// the device refuses it -- is "not ours", not an error: the watcher
 /// probes every partition it sees, and most of them belong to another
 /// filesystem.
 pub fn detect_at<B: FsBackend, S: BlockSource + ?Sized>(src: &S, offset: u64) -> bool {
-    let mut buf = vec![0u8; PROBE_SECTOR];
+    let mut buf = vec![0u8; probe_len(B::PROBE_BYTES)];
     if src.read_at(offset, &mut buf).is_err() {
         return false;
     }
@@ -235,6 +247,15 @@ mod window_tests {
         let img = disk(4 << 20, 1024 + 0x38, &[0x53, 0xEF]);
         assert!(detect_at::<Shallow, _>(&img, PART as u64));
         assert_eq!(SHALLOW_SAW.load(Ordering::SeqCst), 4096);
+    }
+
+    #[test]
+    fn the_probe_length_is_whole_sectors_and_never_less_than_one() {
+        assert_eq!(probe_len(0), PROBE_SECTOR);
+        assert_eq!(probe_len(1), PROBE_SECTOR);
+        assert_eq!(probe_len(PROBE_SECTOR), PROBE_SECTOR);
+        assert_eq!(probe_len(PROBE_SECTOR + 1), 2 * PROBE_SECTOR);
+        assert_eq!(probe_len(0x1_0048), 0x1_1000);
     }
 
     #[test]
