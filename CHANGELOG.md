@@ -6,6 +6,12 @@ patch never does.
 
 ## [Unreleased]
 
+### Changed
+
+- **The winget template declares GPL-3.0-or-later**, the skeleton's own
+  licence, so a driver made from it no longer publishes GPL-3.0 only.
+
+
 ### Added
 
 - **`FsBackend::PROBE_BYTES` says how far into a partition `detect` needs to
