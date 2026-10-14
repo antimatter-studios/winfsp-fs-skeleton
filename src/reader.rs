@@ -16,7 +16,7 @@
 //! this**: the readers do not merely differ in name, they differ in
 //! *shape*.
 //!
-//! | | `am-fs-erofs` | `am-fs-xfs` |
+//! | | `rust-fs-erofs` | `rust-fs-xfs` |
 //! |---|---|---|
 //! | open | `open(dev)` | `mount(dev)` / `mount_rw(dev)` |
 //! | read a file | `read_file(&inode, offset, &mut buf) -> Result<()>` | `read_file(&inode, raw: &[u8]) -> Result<Vec<u8>>` |
@@ -46,8 +46,8 @@
 //! # Why reading and writing are separate traits
 //!
 //! [`FsReader`] and [`FsWriter`] split because the drivers genuinely
-//! do. `am-fs-erofs` mounts a read-only format and gets its writability
-//! from an in-memory overlay; `am-fs-ext4` writes to the device. Folding
+//! do. `rust-fs-erofs` mounts a read-only format and gets its writability
+//! from an in-memory overlay; `rust-fs-ext4` writes to the device. Folding
 //! both into one trait would force the read-only driver to implement
 //! mutating methods it can only answer with an error, which is how a
 //! trait starts lying about what its implementors can do.
@@ -149,10 +149,10 @@ pub trait FsReader: Send + Sync + 'static {
     /// writability separately.
     ///
     /// The device arrives as the skeleton's own [`BlockSource`], not a
-    /// reader's device type. The readers all take `am-fs-core`'s
+    /// reader's device type. The readers all take `rust-fs-core`'s
     /// `BlockRead`, and adapting between the two is the driver's job:
     /// it is one adapter per driver, against the alternative of this
-    /// crate taking a dependency on `am-fs-core` purely to name a type
+    /// crate taking a dependency on `rust-fs-core` purely to name a type
     /// in a signature.
     ///
     /// [`BlockSource`]: crate::device::BlockSource
