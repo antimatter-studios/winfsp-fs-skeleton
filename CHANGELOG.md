@@ -27,6 +27,16 @@ patch never does.
   was never detected and its disks were silently never auto-mounted. They
   now read `PROBE_BYTES`, rounded up to whole 4 KiB sectors so a raw
   512-byte or 4Kn device accepts the read.
+- **`customize.sh` produces an installer that builds.** `Product.wxs`
+  installed `Mount-Ext4.ps1` after the script had renamed it to
+  `Mount-<Fs>.ps1`, because only lowercase `ext4` was substituted; the
+  capitalised form is now replaced too, along with `Ext4Msi`,
+  `Ext4WinDriver`, `Ext4Exe` and `MountAsExt4`.
+- **`customize.sh` writes `--github-repo` as given.** Each substitution ran
+  over the output of the ones before it, so the bare-owner rule rewrote
+  `antimatter-studios/<name>` to `<publisher-id>/<name>`. Substitutions now
+  go through placeholders no later rule matches, and the bare owner is the
+  owner half of `--github-repo`.
 
 ## [0.2.2] — 2026-10-04
 

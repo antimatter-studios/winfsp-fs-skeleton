@@ -57,6 +57,7 @@ multiple files; a single sed pass over the copied tree handles it.
 |---|---|---|
 | Crate / package name | `ext4-win-driver` | `Cargo.toml`, MSI Name, file names |
 | FS short name | `ext4` | log lines, service-class prefix |
+| FS name, capitalised | `Ext4` | `Mount-Ext4.ps1`, WiX ids such as `Ext4Msi` and `MountAsExt4` |
 | SCM service name | `ExtFsWatcher` | `<ServiceInstall Name=...>` in Product.wxs, your `FsBackend::SERVICE_NAME` |
 | WinFsp.Launcher class | `ext4-mount` | registry key in Product.wxs, your `FsBackend::LAUNCHER_SERVICE_CLASS` |
 | File extension verb | `.img` | `HKCR\SystemFileAssociations\.<ext>\shell\...` in Product.wxs |
@@ -65,6 +66,7 @@ multiple files; a single sed pass over the copied tree handles it.
 | MSI UpgradeCode (GUID) | `d6f3a7c2-9b14-4e7a-9b23-7c5f1f4a8e91` | **regenerate per consumer**, never reuse |
 | Bundle UpgradeCode (GUID) | `b6d4e8a1-3f29-4c7d-9e22-1a8c5d6f7e34` | **regenerate per consumer**, never reuse |
 | GitHub repo URL | `antimatter-studios/ext4-win-driver` | Product.wxs `AboutUrl`, Bundle.wxs, release.yml `gh release upload` |
+| GitHub owner | `antimatter-studios` | winget `PublisherUrl`; the owner half of the repo slug |
 | winget package id | `AntimatterStudios.ext4-win-driver` | all three winget yamls |
 | WinFsp redist version | `2.1.25156` | build.ps1's `WinFspVersion` pin |
 | WinFsp redist SHA256 | hex | build.ps1's `WinFspSha256` pin |
