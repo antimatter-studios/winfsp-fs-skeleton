@@ -181,15 +181,15 @@ fi
 # atomically before any of their substrings get rewritten by a later rule.
 # E.g. `antimatter-studios/ext4-win-driver` must be replaced before
 # `ext4-win-driver` alone, or the compound rule won't match anything.
+# A replacement is never matched by a later rule: see the two passes below.
 declare -a REPLACEMENTS=(
   # winget package id (compound: <publisher>.<name>)
   "AntimatterStudios.ext4-win-driver|${WINGET_ID}"
   # GitHub repo slug (compound: <org>/<repo>)
   "antimatter-studios/ext4-win-driver|${GITHUB_REPO}"
-  # Bare GitHub org slug (PublisherUrl). The org id used in URLs is
-  # lowercased+hyphenated; use the publisher id if the consumer hasn't
-  # told us otherwise -- close enough for the templates' purposes.
-  "antimatter-studios|${PUBLISHER_ID}"
+  # Bare GitHub org slug (PublisherUrl): the owner half of the repo slug,
+  # so every GitHub link names the same owner.
+  "antimatter-studios|${GITHUB_REPO%%/*}"
   # crate / package name
   "ext4-win-driver|${NAME}"
   # SCM service name
@@ -198,8 +198,10 @@ declare -a REPLACEMENTS=(
   "ext4-mount|${LAUNCHER_CLASS}"
   # verb display name (compound: contains the fs-name substring)
   "Mount as ext4|${VERB_DISPLAY_NAME}"
-  # fs short name
+  # fs short name, and its capitalised form in identifiers and file names
+  # (Ext4Msi, MountAsExt4, Mount-Ext4.ps1 -- matching the Mount-Fs.ps1 rename)
   "ext4|${FS_NAME}"
+  "Ext4|${fs_title}"
   # file extension verb
   ".img|.${FILE_EXTENSION}"
   # manufacturer / publisher (display strings)
@@ -216,20 +218,35 @@ declare -a REPLACEMENTS=(
   "073a70e00f77423e34bed98b86e600def93393ba5822204fac57a29324db9f7a|${WINFSP_SHA256}"
 )
 
-# Build a single sed program. We use `|` as the s/// delimiter because none of
-# the replacement values are expected to contain `|`. Replacement strings are
-# escaped for sed metachars (& and \) and the chosen delimiter.
+# Build a single sed program in two passes. The first replaces every reference
+# value with a placeholder, @@SKELETON_<n>@@, that no rule matches; the second
+# replaces the placeholders with the consumer's values. A rule therefore never
+# rewrites what an earlier rule wrote: a --github-repo of
+# antimatter-studios/<name> is not turned into <publisher-id>/<name> by the
+# bare-org rule that follows it.
+#
+# We use `|` as the s/// delimiter because none of the values are expected to
+# contain `|`. Patterns are escaped for the regex metachars, replacements for
+# & and \, and both for the delimiter.
+sed_escape_pattern() {
+  printf '%s' "$1" | sed -e 's/[]\\.*^$[|]/\\&/g'
+}
 sed_escape() {
   printf '%s' "$1" | sed -e 's/[\\&|]/\\&/g'
 }
 
 SED_PROG=""
+i=0
 for r in "${REPLACEMENTS[@]}"; do
   from="${r%%|*}"
+  SED_PROG+="s|$(sed_escape_pattern "$from")|@@SKELETON_${i}@@|g;"
+  i=$((i + 1))
+done
+i=0
+for r in "${REPLACEMENTS[@]}"; do
   to="${r#*|}"
-  from_esc="$(sed_escape "$from")"
-  to_esc="$(sed_escape "$to")"
-  SED_PROG+="s|${from_esc}|${to_esc}|g;"
+  SED_PROG+="s|@@SKELETON_${i}@@|$(sed_escape "$to")|g;"
+  i=$((i + 1))
 done
 
 # Apply to every file in the copied tree. Skip any binary files (none are
