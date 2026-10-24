@@ -64,6 +64,17 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy ${{ matrix.features }} -- -D warnings
 
+  # customize.sh materialises the templates for a new driver. Run it for a
+  # filesystem that shares nothing with the reference consumer and check the
+  # result: no reference value left, every file the installer names present,
+  # --github-repo written as given.
+  templates:
+    name: templates (customize.sh)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash templates/test-customize.sh
+
   fmt:
     name: rustfmt
     runs-on: ubuntu-latest
